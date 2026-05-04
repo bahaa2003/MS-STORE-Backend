@@ -97,4 +97,55 @@ const googleCallback = catchAsync(async (req, res) => {
     res.redirect(`${frontendBase}/auth?token=${result.token}`);
 });
 
-module.exports = { register, login, verifyEmail, resendVerification, googleCallback };
+// ─── Two-Factor Authentication ────────────────────────────────────────────────
+
+/**
+ * POST /api/auth/2fa/generate
+ * Requires authentication. Generates a new TOTP secret + QR code.
+ */
+const generate2FA = catchAsync(async (req, res) => {
+    const result = await authService.generate2FASecret(req.user._id);
+    sendSuccess(res, result, '2FA secret generated. Scan the QR code with your authenticator app.');
+});
+
+/**
+ * POST /api/auth/2fa/enable
+ * Requires authentication. Verifies TOTP token and activates 2FA.
+ */
+const enable2FA = catchAsync(async (req, res) => {
+    const result = await authService.enable2FA(req.user._id, req.body.token);
+    sendSuccess(res, null, result.message);
+});
+
+/**
+ * POST /api/auth/2fa/disable
+ * Requires authentication. Deactivates 2FA (requires password or TOTP code).
+ */
+const disable2FA = catchAsync(async (req, res) => {
+    const { password, code } = req.body;
+    const result = await authService.disable2FA(req.user._id, { password, code });
+    sendSuccess(res, null, result.message);
+});
+
+/**
+ * POST /api/auth/verify-2fa
+ * Public (uses temp token in body, not Bearer header).
+ * Exchanges a 2FA-pending temp token + TOTP code for a full JWT.
+ */
+const verify2FA = catchAsync(async (req, res) => {
+    const { tempToken, code } = req.body;
+    const result = await authService.verify2FA(tempToken, code);
+    sendSuccess(res, result, 'Logged in successfully.');
+});
+
+module.exports = {
+    register,
+    login,
+    verifyEmail,
+    resendVerification,
+    googleCallback,
+    generate2FA,
+    enable2FA,
+    disable2FA,
+    verify2FA,
+};

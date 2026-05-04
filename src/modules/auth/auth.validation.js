@@ -52,4 +52,44 @@ const loginValidation = [
         .notEmpty().withMessage('Password is required'),
 ];
 
-module.exports = { registerValidation, loginValidation };
+// ─── 2FA Validation ───────────────────────────────────────────────────────────
+
+const enable2FAValidation = [
+    body('token')
+        .trim()
+        .notEmpty().withMessage('2FA token is required')
+        .isLength({ min: 6, max: 6 }).withMessage('2FA token must be exactly 6 digits')
+        .isNumeric().withMessage('2FA token must contain only digits'),
+];
+
+const disable2FAValidation = [
+    body('password')
+        .optional()
+        .isString().withMessage('Password must be a string'),
+
+    body('code')
+        .optional()
+        .trim()
+        .isLength({ min: 6, max: 6 }).withMessage('2FA code must be exactly 6 digits')
+        .isNumeric().withMessage('2FA code must contain only digits'),
+];
+
+const verify2FAValidation = [
+    body('tempToken')
+        .notEmpty().withMessage('Temporary token is required')
+        .isString().withMessage('Temporary token must be a string'),
+
+    body('code')
+        .trim()
+        .notEmpty().withMessage('2FA code is required')
+        .isLength({ min: 6, max: 6 }).withMessage('2FA code must be exactly 6 digits')
+        .isNumeric().withMessage('2FA code must contain only digits'),
+];
+
+module.exports = {
+    registerValidation,
+    loginValidation,
+    enable2FAValidation,
+    disable2FAValidation,
+    verify2FAValidation,
+};

@@ -11,6 +11,7 @@ const {
 const validate = require('../../shared/middlewares/validate');
 const authenticate = require('../../shared/middlewares/authenticate');
 const authorize = require('../../shared/middlewares/authorize');
+const requirePermission = require('../../shared/middlewares/requirePermission');
 const requireActiveUser = require('../../shared/middlewares/requireActiveUser');
 const { createUpload } = require('../../shared/middlewares/upload');
 
@@ -58,7 +59,8 @@ router.get(
  */
 router.patch(
     '/:id/approve',
-    authorize('ADMIN'),
+    authorize('ADMIN', 'SUPERVISOR'),
+    requirePermission('MANAGE_DEPOSITS'),
     approveDepositValidation, validate,
     depositController.approveDeposit
 );
@@ -70,7 +72,8 @@ router.patch(
  */
 router.patch(
     '/:id/reject',
-    authorize('ADMIN'),
+    authorize('ADMIN', 'SUPERVISOR'),
+    requirePermission('MANAGE_DEPOSITS'),
     rejectDepositValidation, validate,
     depositController.rejectDeposit
 );

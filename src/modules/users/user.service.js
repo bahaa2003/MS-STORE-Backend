@@ -5,6 +5,7 @@ const Group = require('../groups/group.model');
 const { NotFoundError, ConflictError, BusinessRuleError } = require('../../shared/errors/AppError');
 const { createAuditLog } = require('../audit/audit.service');
 const { USER_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('../audit/audit.constants');
+const { notifyAccountApproved } = require('../notifications/notification.service');
 
 /** Shared populate projection for group fields shown in user responses. */
 const GROUP_PROJECTION = 'name percentage isActive';
@@ -109,6 +110,9 @@ const approveUser = async (targetUserId, adminId, auditContext = null) => {
         ipAddress: auditContext?.ipAddress ?? null,
         userAgent: auditContext?.userAgent ?? null,
     });
+
+    // Notification: fire-and-forget
+    notifyAccountApproved(targetUserId);
 
     return updatedUser.toSafeObject ? updatedUser.toSafeObject() : updatedUser.toObject();
 };

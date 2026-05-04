@@ -14,6 +14,7 @@
 const { Router } = require('express');
 const authenticate = require('../middlewares/authenticate');
 const authorize = require('../middlewares/authorize');
+const requirePermission = require('../middlewares/requirePermission');
 const { createUpload } = require('../middlewares/upload');
 const { BusinessRuleError } = require('../errors/AppError');
 const { sendSuccess } = require('../utils/apiResponse');
@@ -21,10 +22,15 @@ const { sendSuccess } = require('../utils/apiResponse');
 const router = Router();
 
 const ALLOWED_CATEGORIES = new Set(['products', 'categories', 'payments']);
+const CATEGORY_PERMISSIONS = {
+    products: 'MANAGE_PRODUCTS',
+    categories: 'MANAGE_PRODUCTS',
+    payments: 'MANAGE_PAYMENT_METHODS',
+};
 
 // All upload routes require auth + admin
 router.use(authenticate);
-router.use(authorize('ADMIN'));
+router.use(authorize('ADMIN', 'SUPERVISOR'));
 
 /**
  * @route  POST /api/upload/:category
@@ -43,6 +49,9 @@ router.post('/:category', (req, res, next) => {
         );
     }
 
+    return requirePermission(CATEGORY_PERMISSIONS[category])(req, res, next);
+}, (req, res, next) => {
+    const { category } = req.params;
     const upload = createUpload(category);
     upload.single('image')(req, res, (err) => {
         if (err) return next(err);

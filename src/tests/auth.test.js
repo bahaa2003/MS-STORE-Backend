@@ -72,7 +72,7 @@ describe('[1] Registration', () => {
         await createGroup({ name: 'Default', percentage: 0 });
     });
 
-    it('creates a new user with verified=false and PENDING status', async () => {
+    it('creates a new user with verified=false and ACTIVE status', async () => {
         const { user } = await register({
             name: 'Alice',
             email: `alice-${Date.now()}@example.com`,
@@ -83,7 +83,7 @@ describe('[1] Registration', () => {
             .select('+emailVerificationToken +emailVerificationExpires +verified');
 
         expect(dbUser.verified).toBe(false);
-        expect(dbUser.status).toBe(USER_STATUS.PENDING);
+        expect(dbUser.status).toBe(USER_STATUS.ACTIVE);
         expect(dbUser.emailVerificationToken).not.toBeNull();
         expect(dbUser.emailVerificationExpires).not.toBeNull();
     });
@@ -246,9 +246,9 @@ describe('[4] Login gates', () => {
         await createGroup({ name: 'Default', percentage: 0 });
     });
 
-    it('blocks login when email is not verified', async () => {
+    it('blocks login when email is not verified (even though ACTIVE)', async () => {
         await register({ name: 'Unverified', email, password });
-        // Don't verify — status is PENDING, verified=false
+        // Don't verify — status is ACTIVE but verified=false
 
         await expect(login({ email, password }))
             .rejects.toMatchObject({ code: 'AUTHENTICATION_ERROR' });
@@ -258,11 +258,16 @@ describe('[4] Login gates', () => {
     });
 
     it('blocks login when account is PENDING (even if verified)', async () => {
-        await register({ name: 'Pending', email: `pending-${Date.now()}@example.com`, password });
-        // Manually mark as verified but keep PENDING
-        const u = await User.findOne({ email: { $regex: 'pending-' } });
-        u.verified = true;
-        await u.save();
+        // Registration now creates ACTIVE users, so we must explicitly
+        // create a PENDING user to test this gate.
+        const group = await require('../modules/groups/group.model').findOne({});
+        const u = await createCustomer({
+            groupId: group._id,
+            status: USER_STATUS.PENDING,
+            email: `pending-${Date.now()}@example.com`,
+            password,
+            verified: true,
+        });
 
         await expect(login({ email: u.email, password }))
             .rejects.toMatchObject({ code: 'AUTHENTICATION_ERROR' });

@@ -84,7 +84,8 @@ const listUsersQuery = Joi.object({
     status: Joi.string().valid('PENDING', 'ACTIVE', 'REJECTED'),
     verified: Joi.boolean(),
     email: Joi.string().max(128),
-    role: Joi.string().valid('ADMIN', 'CUSTOMER'),
+    search: Joi.string().trim().max(128).allow('', null),
+    role: Joi.string().valid('ADMIN', 'SUPERVISOR', 'CUSTOMER'),
     from: Joi.date().iso(),
     to: Joi.date().iso().min(Joi.ref('from')),
     sortBy: Joi.string().valid('createdAt', 'email', 'name', 'status', 'walletBalance').default('createdAt'),
@@ -92,9 +93,17 @@ const listUsersQuery = Joi.object({
 });
 
 const updateUserRoleSchema = Joi.object({
-    role: Joi.string().valid('ADMIN', 'CUSTOMER').required().messages({
+    role: Joi.string().valid('ADMIN', 'SUPERVISOR', 'CUSTOMER').required().messages({
         'any.required': 'Role is required',
-        'any.only': 'Role must be ADMIN or CUSTOMER',
+        'any.only': 'Role must be ADMIN, SUPERVISOR, or CUSTOMER',
+    }),
+});
+
+const updateUserPermissionsSchema = Joi.object({
+    permissions: Joi.array().items(
+        Joi.string().trim().uppercase().max(64)
+    ).required().messages({
+        'any.required': 'Permissions array is required',
     }),
 });
 
@@ -131,7 +140,7 @@ const createProviderSchema = Joi.object({
     name: Joi.string().trim().min(2).max(64).required(),
     slug: Joi.string().trim().lowercase().pattern(/^[a-z0-9-]+$/).max(64),
     baseUrl: Joi.string().uri().required(),
-    apiToken: Joi.string().trim().max(512),
+    apiToken: Joi.string().trim().max(4096),
     isActive: Joi.boolean().default(true),
     syncInterval: Joi.number().integer().min(0).default(60),
     supportedFeatures: Joi.array().items(Joi.string()).default([]),
@@ -141,7 +150,7 @@ const updateProviderSchema = Joi.object({
     name: Joi.string().trim().min(2).max(64),
     slug: Joi.string().trim().lowercase().pattern(/^[a-z0-9-]+$/).max(64),
     baseUrl: Joi.string().uri(),
-    apiToken: Joi.string().trim().max(512).allow('', null),
+    apiToken: Joi.string().trim().max(4096).allow('', null),
     isActive: Joi.boolean(),
     syncInterval: Joi.number().integer().min(0),
     supportedFeatures: Joi.array().items(Joi.string()),
@@ -310,6 +319,7 @@ module.exports = {
         updateCreditLimit: updateCreditLimitSchema,
         resetUserPassword: resetUserPasswordSchema,
         updateUserAvatar: updateUserAvatarSchema,
+        updateUserPermissions: updateUserPermissionsSchema,
         // Providers
         createProvider: createProviderSchema,
         updateProvider: updateProviderSchema,

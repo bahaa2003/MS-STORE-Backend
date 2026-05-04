@@ -33,6 +33,7 @@ const {
     ACTOR_ROLES,
 } = require('../audit/audit.constants');
 const { toInternalStatus, isTerminal, requiresRefund } = require('../providers/statusMapper');
+const { notifyOrderCompleted, notifyOrderFailed } = require('../notifications/notification.service');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IDEMPOTENT REFUND
@@ -384,6 +385,9 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
             console.error(`[Fulfillment] Refund FAILED for order ${orderId}:`, refundErr.message);
         }
 
+        // Notification: fire-and-forget
+        notifyOrderFailed(await Order.findById(orderId).catch(() => null));
+
         return { order: await Order.findById(orderId), placed: false, refunded: refundIssued };
     }
 
@@ -442,6 +446,9 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
         entityId: orderId,
         metadata: { orderId: orderId.toString() },
     });
+
+    // Notification: fire-and-forget
+    notifyOrderCompleted(await Order.findById(orderId));
 
     return { order: await Order.findById(orderId), placed: true, refunded: false };
 
@@ -587,6 +594,9 @@ const processOrderStatusResult = async (order, statusResult) => {
             entityId: order._id,
             metadata: { orderId: order._id.toString() },
         });
+
+        // Notification: fire-and-forget
+        notifyOrderCompleted(order);
 
         return { action: 'completed' };
     }

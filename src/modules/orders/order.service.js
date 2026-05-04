@@ -26,6 +26,42 @@ const { convertUsdToUserCurrency } = require('../../services/currencyConverter.s
 const { User } = require('../users/user.model');
 const { getLivePrice, invalidate: invalidatePriceCache } = require('../providers/providerPriceCache');
 const { toDecimal, toStr, toFiat, multiply, subtract, add, isPositive, compare } = require('../../shared/utils/decimalPrecision');
+const { notifyNewManualOrder, notifyOrderCompleted, notifyOrderFailed } = require('../notifications/notification.service');
+
+const TRANSACTION_UNSUPPORTED_PATTERN = /Transaction numbers are only allowed|replica set member|mongos|transaction.*not supported/i;
+
+const isTransactionUnsupportedError = (err) => {
+    const message = `${err?.message || ''} ${err?.errmsg || ''}`;
+    return TRANSACTION_UNSUPPORTED_PATTERN.test(message);
+};
+
+const shouldUseOrderTransactions = () => {
+    const override = String(process.env.ORDER_CREATION_TRANSACTIONS || '').trim().toLowerCase();
+    if (['false', '0', 'off', 'no'].includes(override)) return false;
+    if (['true', '1', 'on', 'yes'].includes(override)) return true;
+
+    const topologyType = mongoose.connection?.client?.topology?.description?.type;
+    if (!topologyType) return process.env.NODE_ENV === 'production';
+
+    return !['Single', 'Unknown'].includes(topologyType);
+};
+
+const abortTransactionQuietly = async (session) => {
+    if (!session?.inTransaction?.()) return;
+    try {
+        await session.abortTransaction();
+    } catch (err) {
+        console.error('[Order] abortTransaction failed:', err.message);
+    }
+};
+
+const endSessionQuietly = (session) => {
+    try {
+        session?.endSession?.();
+    } catch (_) {
+        // already ended
+    }
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JIT PRICE AUTO-UPDATE HELPER
@@ -174,10 +210,12 @@ const createOrder = async ({
  */
 const _attemptCreateOrder = async (
     { userId, productId, quantity, idempotencyKey, auditContext, orderFieldsValues, provider, providerCode = null },
-    isRetry = false
+    isRetry = false,
+    forceStandalone = false
 ) => {
 
-    const session = await mongoose.startSession();
+    const useTransaction = !forceStandalone && shouldUseOrderTransactions();
+    const session = useTransaction ? await mongoose.startSession() : null;
 
     // ── 0. Assign sequential order number (OUTSIDE txn) ──────────────────
     // Auto-increment counters are intentionally non-transactional (same as
@@ -187,10 +225,12 @@ const _attemptCreateOrder = async (
     const orderNumber = await getNextSequence('orderNumber', 9999);
 
     try {
-        session.startTransaction({
-            readConcern: { level: 'snapshot' },
-            writeConcern: { w: 'majority' },
-        });
+        if (session) {
+            session.startTransaction({
+                readConcern: { level: 'snapshot' },
+                writeConcern: { w: 'majority' },
+            });
+        }
 
         // ── 1. Load & Validate Product ─────────────────────────────────────────
         const product = await Product.findById(productId).session(session);
@@ -357,20 +397,48 @@ const _attemptCreateOrder = async (
 
         let order;
         try {
-            [order] = await Order.create([orderData], { session });
+            if (session) {
+                [order] = await Order.create([orderData], { session });
+            } else {
+                order = await Order.create(orderData);
+            }
         } catch (createErr) {
             if (createErr.code === 11000 && idempotencyKey) {
-                await session.abortTransaction();
-                session.endSession();
+                if (!session) {
+                    await refundWalletAtomic({
+                        userId,
+                        walletDeducted,
+                        creditUsedAmount: Number(creditUsedAmount) || 0,
+                        reference: orderId,
+                        description: `Reversal for duplicate order request: ${product.name} x${qty}`,
+                    }).catch((refundErr) => {
+                        console.error(`[Order] standalone duplicate compensation failed for ${orderId}:`, refundErr.message);
+                    });
+                }
+                await abortTransactionQuietly(session);
+                endSessionQuietly(session);
                 const existing = await Order.findOne({ userId, idempotencyKey })
                     .populate('productId', 'name basePrice executionType providerProduct');
                 return { order: existing, idempotent: true };
+            }
+            if (!session) {
+                await refundWalletAtomic({
+                    userId,
+                    walletDeducted,
+                    creditUsedAmount: Number(creditUsedAmount) || 0,
+                    reference: orderId,
+                    description: `Reversal for failed order creation: ${product.name} x${qty}`,
+                }).catch((refundErr) => {
+                    console.error(`[Order] standalone create compensation failed for ${orderId}:`, refundErr.message);
+                });
             }
             throw createErr;
         }
 
         // ── 8. Commit ──────────────────────────────────────────────────────────
-        await session.commitTransaction();
+        if (session) {
+            await session.commitTransaction();
+        }
 
         await order.populate([{ path: 'productId', select: 'name basePrice executionType providerProduct' }]);
 
@@ -422,6 +490,10 @@ const _attemptCreateOrder = async (
         // Always fires for AUTOMATIC products. executeOrder self-resolves the
         // provider adapter if none was pre-resolved, and handles all failures
         // (marks FAILED + refunds the wallet).
+        if (!isAutomatic) {
+            notifyNewManualOrder(order);
+        }
+
         if (isAutomatic) {
             createAuditLog({
                 actorId, actorRole, ipAddress, userAgent,
@@ -444,23 +516,32 @@ const _attemptCreateOrder = async (
         return { order, idempotent: false };
 
     } catch (err) {
-        if (session.inTransaction()) {
-            await session.abortTransaction();
+        await abortTransactionQuietly(session);
+
+        if (session && isTransactionUnsupportedError(err)) {
+            endSessionQuietly(session);
+            console.warn('[Order] MongoDB transactions are unavailable; retrying order creation without a session.');
+            return _attemptCreateOrder(
+                { userId, productId, quantity, idempotencyKey, auditContext, orderFieldsValues, provider, providerCode },
+                true,
+                true
+            );
         }
 
         if ((err.code === 112 || err.code === 24) && !isRetry) {
-            session.endSession();
+            endSessionQuietly(session);
             await new Promise((r) => setTimeout(r, 10));
             return _attemptCreateOrder(
                 { userId, productId, quantity, idempotencyKey, auditContext, orderFieldsValues, provider, providerCode },
-                true
+                true,
+                forceStandalone
             );
 
         }
 
         throw err;
     } finally {
-        try { session.endSession(); } catch (_) { /* already ended */ }
+        endSessionQuietly(session);
     }
 };
 
@@ -586,6 +667,9 @@ const markOrderAsFailed = async (orderId, auditContext = null) => {
                 currency: order.currency,
             },
         });
+
+        // Notification: fire-and-forget
+        notifyOrderFailed(order);
 
         return order;
     } catch (err) {
@@ -763,6 +847,10 @@ const markOrderAsCompleted = async (orderId) => {
 
     order.status = ORDER_STATUS.COMPLETED;
     await order.save();
+
+    // Notification: fire-and-forget
+    notifyOrderCompleted(order);
+
     return order;
 };
 

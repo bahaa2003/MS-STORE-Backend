@@ -31,6 +31,7 @@
 const express = require('express');
 const  authenticate  = require('../../shared/middlewares/authenticate');
 const  authorize  = require('../../shared/middlewares/authorize');
+const requirePermission = require('../../shared/middlewares/requirePermission');
 const {
     syncProvider,
     syncAll,
@@ -51,33 +52,34 @@ const router = express.Router();
 
 // All admin routes require authentication and ADMIN role
 router.use(authenticate);
-router.use(authorize('ADMIN'));
+router.use(authorize('ADMIN', 'SUPERVISOR'));
 
 // ── Sync ──────────────────────────────────────────────────────────────────────
 
-router.post('/catalog/sync', syncAll);
-router.post('/catalog/sync/:providerId', syncProvider);
+router.post('/catalog/sync', requirePermission('MANAGE_SUPPLIERS'), syncAll);
+router.post('/catalog/sync/:providerId', requirePermission('MANAGE_SUPPLIERS'), syncProvider);
 
 // ── Layer 2 — Raw Provider Products ──────────────────────────────────────────
 //
 // NOTE: /item/:id must be defined BEFORE /:providerId to avoid Express
 // treating "item" as a providerId param value.
 
-router.get('/provider-products', listAllProviderProducts);
-router.get('/provider-products/item/:id', getProviderProduct);
-router.get('/provider-products/item/:id/price', getProviderProductPrice);
-router.patch('/provider-products/item/:id/translated-name', setTranslatedName);
-router.get('/provider-products/:providerId', listProviderProducts);
+router.get('/provider-products', requirePermission('MANAGE_PRODUCTS'), listAllProviderProducts);
+router.get('/provider-products/item/:id', requirePermission('MANAGE_PRODUCTS'), getProviderProduct);
+router.get('/provider-products/item/:id/price', requirePermission('MANAGE_PRODUCTS'), getProviderProductPrice);
+router.patch('/provider-products/item/:id/translated-name', requirePermission('MANAGE_PRODUCTS'), setTranslatedName);
+router.get('/provider-products/:providerId', requirePermission('MANAGE_PRODUCTS'), listProviderProducts);
 
 // ── Layer 3 — Platform Products ───────────────────────────────────────────────
 //
 // NOTE: /from-provider must be defined BEFORE /:id to avoid param conflict.
 
-router.get('/products', listProducts);
+router.use('/products', requirePermission('MANAGE_PRODUCTS'));
+router.get('/products', requirePermission('MANAGE_PRODUCTS'), listProducts);
 router.post('/products', createProduct);                   // ← manual product creation
-router.post('/products/from-provider', createProductFromProvider);
-router.patch('/products/:id/toggle', toggleProduct);
-router.delete('/products/:id', deleteProduct);
-router.patch('/products/:id', updateProduct);
+router.post('/products/from-provider', requirePermission('MANAGE_PRODUCTS'), createProductFromProvider);
+router.patch('/products/:id/toggle', requirePermission('MANAGE_PRODUCTS'), toggleProduct);
+router.delete('/products/:id', requirePermission('MANAGE_PRODUCTS'), deleteProduct);
+router.patch('/products/:id', requirePermission('MANAGE_PRODUCTS'), updateProduct);
 
 module.exports = router;

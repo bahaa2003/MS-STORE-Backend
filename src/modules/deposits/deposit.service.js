@@ -12,6 +12,7 @@ const {
 } = require('../../shared/errors/AppError');
 const { createAuditLog } = require('../audit/audit.service');
 const { DEPOSIT_ACTIONS, WALLET_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('../audit/audit.constants');
+const { notifyNewDeposit, notifyDepositApproved, notifyDepositRejected } = require('../notifications/notification.service');
 
 // =============================================================================
 // CREATE
@@ -22,10 +23,10 @@ const { DEPOSIT_ACTIONS, WALLET_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('
  *
  * Business rules:
  *   - User must exist and be ACTIVE (enforced upstream by requireActiveUser middleware).
- *   - A user may NOT have more than one PENDING deposit at a time.
  *   - requestedAmount must be > 0 (enforced by schema).
  *   - amountUsd is pre-calculated by the controller using the frozen exchangeRate.
  *   - No wallet credit at this stage; the request is PENDING until admin review.
+ *   - Multiple concurrent PENDING deposits are allowed.
  *
  * Audit: DEPOSIT_REQUESTED — fire-and-forget after save.
  *
@@ -57,18 +58,6 @@ const createDepositRequest = async ({
     const user = await User.findById(userId).select('_id role');
     if (!user) throw new NotFoundError('User');
 
-    // ── Guard: prevent duplicate pending deposits ────────────────────────
-    const existingPending = await DepositRequest.findOne({
-        userId,
-        status: DEPOSIT_STATUS.PENDING,
-    });
-    if (existingPending) {
-        throw new BusinessRuleError(
-            'You already have a pending deposit request. Please wait for it to be processed.',
-            'DUPLICATE_PENDING_DEPOSIT'
-        );
-    }
-
     const deposit = await DepositRequest.create({
         userId,
         paymentMethodId,
@@ -99,6 +88,8 @@ const createDepositRequest = async ({
         ipAddress: auditContext?.ipAddress ?? null,
         userAgent: auditContext?.userAgent ?? null,
     });
+
+    notifyNewDeposit(deposit);
 
     return deposit;
 };
@@ -269,6 +260,9 @@ const approveDeposit = async (depositId, adminId, adminOverrides = {}, auditCont
         .populate('userId', 'name email avatar currency walletBalance')
         .populate('reviewedBy', 'name email');
 
+    // Notification: fire-and-forget
+    notifyDepositApproved(populated);
+
     return populated;
 };
 
@@ -332,6 +326,9 @@ const rejectDeposit = async (depositId, adminId, adminNotes = null, auditContext
         ipAddress: auditContext?.ipAddress ?? null,
         userAgent: auditContext?.userAgent ?? null,
     });
+
+    // Notification: fire-and-forget
+    notifyDepositRejected(deposit, adminNotes);
 
     return deposit;
 };

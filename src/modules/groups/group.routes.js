@@ -11,11 +11,12 @@ const {
 const validate = require('../../shared/middlewares/validate');
 const authenticate = require('../../shared/middlewares/authenticate');
 const authorize = require('../../shared/middlewares/authorize');
+const requirePermission = require('../../shared/middlewares/requirePermission');
 
 const router = Router();
 
 // All group routes require authentication + ADMIN role
-router.use(authenticate, authorize('ADMIN'));
+router.use(authenticate, authorize('ADMIN', 'SUPERVISOR'));
 
 // ─── Group CRUD ───────────────────────────────────────────────────────────────
 
@@ -26,6 +27,7 @@ router.use(authenticate, authorize('ADMIN'));
  */
 router.post(
     '/',
+    requirePermission('MANAGE_GROUPS'),
     createGroupValidation, validate,
     groupController.createGroup
 );
@@ -51,6 +53,7 @@ router.get('/:id', groupController.getGroup);
  */
 router.patch(
     '/:id',
+    requirePermission('MANAGE_GROUPS'),
     updateGroupValidation, validate,
     groupController.updateGroup
 );
@@ -63,6 +66,7 @@ router.patch(
  */
 router.patch(
     '/:id/percentage',
+    requirePermission('MANAGE_GROUPS'),
     updatePercentageValidation, validate,
     groupController.updateGroupPercentage
 );
@@ -76,6 +80,7 @@ router.patch(
  */
 router.patch(
     '/users/:userId',
+    requirePermission('MANAGE_GROUPS'),
     changeUserGroupValidation, validate,
     groupController.changeUserGroup
 );

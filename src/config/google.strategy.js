@@ -9,7 +9,7 @@
  *   1. User clicks "Login with Google"
  *   2. Google authenticates and calls back with profile
  *   3. We find-or-create a User by googleId (or email as fallback)
- *   4. New users → status=PENDING, verified=true (email trust delegated to Google)
+ *   4. New users → status=ACTIVE, verified=true (email trust delegated to Google)
  *   5. Existing email/password users → googleId is linked on first Google login
  *   6. The resolved user is attached to req.user by Passport
  *
@@ -74,7 +74,7 @@ if (config.google.clientId && config.google.clientSecret) {
                         googleId,
                         role: ROLES.CUSTOMER,
                         groupId: group._id,
-                        status: USER_STATUS.PENDING,
+                        status: USER_STATUS.ACTIVE,
                         verified: true,   // Google guarantees email ownership
                         // No password set — comparePassword never called for OAuth users
                     });

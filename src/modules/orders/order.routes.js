@@ -6,6 +6,7 @@ const { createOrderValidation, orderIdParamValidation } = require('./order.valid
 const validate = require('../../shared/middlewares/validate');
 const authenticate = require('../../shared/middlewares/authenticate');
 const authorize = require('../../shared/middlewares/authorize');
+const requirePermission = require('../../shared/middlewares/requirePermission');
 const requireActiveUser = require('../../shared/middlewares/requireActiveUser');
 
 const router = Router();
@@ -43,27 +44,27 @@ router.get('/my/:id', requireActiveUser, authorize('CUSTOMER'), orderIdParamVali
  * @desc   List all orders (with optional status filter)
  * @access Admin
  */
-router.get('/', authorize('ADMIN'), orderController.getAllOrders);
+router.get('/', authorize('ADMIN', 'SUPERVISOR'), requirePermission('MANAGE_ORDERS'), orderController.getAllOrders);
 
 /**
  * @route  GET /api/orders/:id
  * @desc   Get any order by ID
  * @access Admin
  */
-router.get('/:id', authorize('ADMIN'), orderIdParamValidation, validate, orderController.adminGetOrder);
+router.get('/:id', authorize('ADMIN', 'SUPERVISOR'), requirePermission('MANAGE_ORDERS'), orderIdParamValidation, validate, orderController.adminGetOrder);
 
 /**
  * @route  PATCH /api/orders/:id/fail
  * @desc   Mark order as failed and issue refund
  * @access Admin
  */
-router.patch('/:id/fail', authorize('ADMIN'), orderIdParamValidation, validate, orderController.failOrder);
+router.patch('/:id/fail', authorize('ADMIN', 'SUPERVISOR'), requirePermission('CONFIRM_ORDERS'), orderIdParamValidation, validate, orderController.failOrder);
 
 /**
  * @route  PATCH /api/orders/:id/complete
  * @desc   Mark order as completed
  * @access Admin
  */
-router.patch('/:id/complete', authorize('ADMIN'), orderIdParamValidation, validate, orderController.completeOrder);
+router.patch('/:id/complete', authorize('ADMIN', 'SUPERVISOR'), requirePermission('CONFIRM_ORDERS'), orderIdParamValidation, validate, orderController.completeOrder);
 
 module.exports = router;

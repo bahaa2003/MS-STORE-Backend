@@ -20,6 +20,8 @@ const USER_ACTIONS = Object.freeze({
     LOGIN_SUCCESS: 'USER_LOGIN_SUCCESS',
     LOGIN_BLOCKED: 'USER_LOGIN_BLOCKED',
     GROUP_CHANGED: 'USER_GROUP_CHANGED',
+    TWO_FACTOR_ENABLED: 'USER_2FA_ENABLED',
+    TWO_FACTOR_DISABLED: 'USER_2FA_DISABLED',
 });
 
 /** Actions on the Order lifecycle. */
@@ -85,6 +87,7 @@ const ADMIN_ACTIONS = Object.freeze({
     USER_ROLE_CHANGED: 'ADMIN_USER_ROLE_CHANGED',
     USER_PASSWORD_RESET: 'ADMIN_USER_PASSWORD_RESET',
     USER_AVATAR_UPDATED: 'ADMIN_USER_AVATAR_UPDATED',
+    USER_PERMISSIONS_UPDATED: 'ADMIN_USER_PERMISSIONS_UPDATED',
     ORDER_COMPLETED: 'ADMIN_ORDER_COMPLETED',
     SETTING_UPDATED: 'ADMIN_SETTING_UPDATED',
     PROVIDER_CREATED: 'ADMIN_PROVIDER_CREATED',
@@ -109,6 +112,13 @@ const CATEGORY_ACTIONS = Object.freeze({
     DELETED: 'CATEGORY_DELETED',
 });
 
+/** Target Order lifecycle actions (Vodafone Cash coin purchases). */
+const TARGET_ORDER_ACTIONS = Object.freeze({
+    REQUESTED: 'TARGET_ORDER_REQUESTED',
+    APPROVED: 'TARGET_ORDER_APPROVED',
+    REJECTED: 'TARGET_ORDER_REJECTED',
+});
+
 /**
  * Flat set of ALL valid action strings — used by the model enum validator
  * and the service-layer guard.
@@ -124,6 +134,7 @@ const ALL_ACTIONS = Object.freeze([
     ...Object.values(ADMIN_ACTIONS),
     ...Object.values(PRODUCT_ACTIONS),
     ...Object.values(CATEGORY_ACTIONS),
+    ...Object.values(TARGET_ORDER_ACTIONS),
 ]);
 
 /** Entity types that can be the subject of an audit event. */
@@ -138,11 +149,13 @@ const ENTITY_TYPES = Object.freeze({
     CATEGORY: 'CATEGORY',
     SETTING: 'SETTING',
     SYSTEM: 'SYSTEM',
+    TARGET_ORDER: 'TARGET_ORDER',
 });
 
 /** Actor roles recorded in each audit log. */
 const ACTOR_ROLES = Object.freeze({
     ADMIN: 'ADMIN',
+    SUPERVISOR: 'SUPERVISOR',
     CUSTOMER: 'CUSTOMER',
     SYSTEM: 'SYSTEM',
 });
@@ -158,6 +171,7 @@ module.exports = {
     ADMIN_ACTIONS,
     PRODUCT_ACTIONS,
     CATEGORY_ACTIONS,
+    TARGET_ORDER_ACTIONS,
     ALL_ACTIONS,
     ENTITY_TYPES,
     ACTOR_ROLES,

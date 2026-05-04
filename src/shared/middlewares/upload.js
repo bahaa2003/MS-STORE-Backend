@@ -6,7 +6,7 @@
  * Creates category-specific upload instances that store files to:
  *   /uploads/<category>/<timestamp>-<random>.<ext>
  *
- * Supported categories: avatars, products, categories, payments, deposits
+ * Supported categories: avatars, products, categories, payments, deposits, targets, target-apps
  *
  * Usage:
  *   const { createUpload } = require('../../shared/middlewares/upload');
@@ -55,7 +55,7 @@ const DEPOSIT_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, '.pdf']);
 /**
  * Create a configured multer instance for a specific upload category.
  *
- * @param {'avatars'|'products'|'categories'|'payments'|'deposits'} category
+ * @param {'avatars'|'products'|'categories'|'payments'|'deposits'|'targets'|'target-apps'} category
  * @returns {multer.Multer} A multer instance ready to use as middleware
  */
 const createUpload = (category) => {

@@ -37,6 +37,7 @@ const _findOrFail = async (id) => {
  * @param {string}  [opts.status]    - 'PENDING' | 'ACTIVE' | 'REJECTED'
  * @param {boolean} [opts.verified]  - filter by email verification flag
  * @param {string}  [opts.email]     - partial email search (case-insensitive)
+ * @param {string}  [opts.search]    - partial name/email/username search
  * @param {string}  [opts.role]      - 'ADMIN' | 'CUSTOMER'
  * @param {Date}    [opts.from]      - createdAt >= from
  * @param {Date}    [opts.to]        - createdAt <= to
@@ -49,6 +50,7 @@ const listUsers = async ({
     status,
     verified,
     email,
+    search,
     role,
     from,
     to,
@@ -73,6 +75,16 @@ const listUsers = async ({
     if (verified != null) filter.verified = verified;
     if (role) filter.role = role;
     if (email) filter.email = { $regex: email, $options: 'i' };
+    if (search) {
+        const term = String(search).trim();
+        if (term) {
+            filter.$or = [
+                { name: { $regex: term, $options: 'i' } },
+                { email: { $regex: term, $options: 'i' } },
+                { username: { $regex: term, $options: 'i' } },
+            ];
+        }
+    }
     if (from || to) {
         filter.createdAt = {};
         if (from) filter.createdAt.$gte = new Date(from);
@@ -261,7 +273,7 @@ const updateUserRole = async (id, role, adminId) => {
         throw new BusinessRuleError('You cannot change your own role.', 'SELF_ROLE_CHANGE');
     }
     if (!Object.values(ROLES).includes(role)) {
-        throw new BusinessRuleError(`Invalid role: '${role}'. Must be ADMIN or CUSTOMER.`, 'INVALID_ROLE');
+        throw new BusinessRuleError(`Invalid role: '${role}'. Must be ADMIN, SUPERVISOR, or CUSTOMER.`, 'INVALID_ROLE');
     }
 
     const previousRole = user.role;
@@ -425,6 +437,35 @@ const updateUserCreditLimit = async (id, creditLimit, adminId) => {
     return user;
 };
 
+// ─── Update Permissions ───────────────────────────────────────────────────────
+
+/**
+ * Admin update of a user's permissions array.
+ * Used for fine-grained RBAC — primarily for SUPERVISOR role users.
+ *
+ * @param {string|ObjectId} id          — target user ID
+ * @param {string[]}        permissions — array of permission strings
+ * @param {string|ObjectId} adminId     — acting admin's user ID
+ */
+const updateUserPermissions = async (id, permissions, adminId) => {
+    const user = await _findOrFail(id);
+
+    const previousPermissions = [...(user.permissions || [])];
+    user.permissions = permissions;
+    await user.save();
+
+    createAuditLog({
+        actorId: adminId,
+        actorRole: ACTOR_ROLES.ADMIN,
+        action: ADMIN_ACTIONS.USER_PERMISSIONS_UPDATED,
+        entityType: ENTITY_TYPES.USER,
+        entityId: user._id,
+        metadata: { previousPermissions, newPermissions: permissions },
+    });
+
+    return user;
+};
+
 module.exports = {
     listUsers,
     listDeletedUsers,
@@ -439,4 +480,5 @@ module.exports = {
     updateUserCreditLimit,
     resetUserPassword,
     updateUserAvatar,
+    updateUserPermissions,
 };

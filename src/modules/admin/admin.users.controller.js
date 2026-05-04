@@ -12,13 +12,14 @@ const { sendSuccess, sendCreated, sendPaginated } = require('../../shared/utils/
 
 // GET /admin/users
 const listUsers = catchAsync(async (req, res) => {
-    const { status, verified, email, role, from, to, page, limit, sortBy, sortOrder } = req.query;
+    const { status, verified, email, search, role, from, to, page, limit, sortBy, sortOrder } = req.query;
     const normalizedSortBy = typeof sortBy === 'string' && sortBy.trim() ? sortBy.trim() : 'walletBalance';
     const normalizedSortOrder = String(sortOrder || '').trim().toLowerCase() === 'asc' ? 'asc' : 'desc';
     const result = await svc.listUsers({
         status,
         verified: verified !== undefined ? verified === 'true' : undefined,
         email,
+        search,
         role,
         from,
         to,
@@ -107,6 +108,12 @@ const updateUserCreditLimit = catchAsync(async (req, res) => {
     sendSuccess(res, { user }, 'User credit limit updated');
 });
 
+// PATCH /admin/users/:id/permissions
+const updateUserPermissions = catchAsync(async (req, res) => {
+    const user = await svc.updateUserPermissions(req.params.id, req.body.permissions, req.user._id);
+    sendSuccess(res, { user }, 'User permissions updated');
+});
+
 module.exports = {
     listUsers,
     listDeletedUsers,
@@ -121,4 +128,5 @@ module.exports = {
     updateUserCreditLimit,
     resetUserPassword,
     updateUserAvatar,
+    updateUserPermissions,
 };

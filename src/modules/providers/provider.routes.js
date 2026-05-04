@@ -14,11 +14,12 @@ const {
 const validate = require('../../shared/middlewares/validate');
 const authenticate = require('../../shared/middlewares/authenticate');
 const authorize = require('../../shared/middlewares/authorize');
+const requirePermission = require('../../shared/middlewares/requirePermission');
 
 const router = Router();
 
 // All provider routes are admin-only
-router.use(authenticate, authorize('ADMIN'));
+router.use(authenticate, authorize('ADMIN', 'SUPERVISOR'), requirePermission('MANAGE_SUPPLIERS'));
 
 // =============================================================================
 // LAYER 1 — PROVIDER CRUD

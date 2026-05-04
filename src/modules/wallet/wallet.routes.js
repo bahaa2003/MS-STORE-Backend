@@ -4,6 +4,7 @@ const { Router } = require('express');
 const walletController = require('./wallet.controller');
 const authenticate = require('../../shared/middlewares/authenticate');
 const authorize = require('../../shared/middlewares/authorize');
+const requirePermission = require('../../shared/middlewares/requirePermission');
 const requireActiveUser = require('../../shared/middlewares/requireActiveUser');
 
 const router = Router();
@@ -31,7 +32,7 @@ router.get(
     '/users/:userId/transactions',
     authenticate,
     requireActiveUser,
-    authorize('ADMIN'),
+    authorize('ADMIN', 'SUPERVISOR'),
     walletController.getUserTransactions
 );
 

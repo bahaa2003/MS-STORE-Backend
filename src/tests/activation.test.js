@@ -6,9 +6,9 @@
  * Tests cover:
  *
  *   REGISTRATION
- *   1.  register returns no token — just user + pending message
- *   2.  registered user has status = PENDING
- *   3.  registered user cannot log in immediately
+ *   1.  register returns no token — just user + active message
+ *   2.  registered user has status = ACTIVE
+ *   3.  registered user cannot log in immediately (unverified email)
  *
  *   LOGIN BLOCKING
  *   4.  PENDING user cannot log in
@@ -88,23 +88,23 @@ const registerUser = async () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Registration', () => {
-    it('returns no token — only user profile + pending message', async () => {
+    it('returns no token — only user profile + verification message', async () => {
         const result = await registerUser();
 
         expect(result.token).toBeUndefined();
         expect(result.user).toBeDefined();
-        expect(result.user.status).toBe(USER_STATUS.PENDING);
-        // Message explains verification + approval flow
-        expect(result.message).toMatch(/verify|pending|review/i);
+        expect(result.user.status).toBe(USER_STATUS.ACTIVE);
+        // Message explains verification flow
+        expect(result.message).toMatch(/verify|verified|email/i);
     });
 
-    it('newly registered user has status PENDING in the database', async () => {
+    it('newly registered user has status ACTIVE in the database', async () => {
         const result = await registerUser();
         const dbUser = await User.findById(result.user._id);
-        expect(dbUser.status).toBe(USER_STATUS.PENDING);
+        expect(dbUser.status).toBe(USER_STATUS.ACTIVE);
     });
 
-    it('newly registered user cannot log in immediately', async () => {
+    it('newly registered user cannot log in immediately (unverified email)', async () => {
         await createGroup({ name: 'StandardGr', percentage: 0 });
         const email = uniqueEmail();
         await register({ name: 'Jane', email, password: 'ValidPass@1' });
@@ -359,22 +359,18 @@ describe('Full lifecycle flows', () => {
         admin = await createAdmin();
     });
 
-    it('PENDING → approve → login succeeds with JWT', async () => {
+    it('register → verify email → login succeeds with JWT', async () => {
         const email = uniqueEmail();
         const password = 'ValidPass@1';
         await register({ name: 'User', email, password });
 
         // Set verified=true as if user clicked the email link
-        // (this test is about admin approval, not email verification)
         await User.findOneAndUpdate({ email }, { verified: true });
 
-        const pendingUser = await User.findOne({ email });
-        expect(pendingUser.status).toBe(USER_STATUS.PENDING);
+        const activeUser = await User.findOne({ email });
+        expect(activeUser.status).toBe(USER_STATUS.ACTIVE);
 
-        // Admin approves
-        await userService.approveUser(pendingUser._id, admin._id);
-
-        // Now login should succeed
+        // Now login should succeed (ACTIVE + verified)
         const { token } = await login({ email, password });
         expect(token).toBeDefined();
     });
@@ -402,23 +398,24 @@ describe('Full lifecycle flows', () => {
         ).rejects.toMatchObject({ statusCode: 401 });
     });
 
-    it('REJECTED → re-approve → login succeeds again', async () => {
+    it('register → reject → login blocked → re-approve → login succeeds', async () => {
         const email = uniqueEmail();
         await register({ name: 'User', email, password: 'ValidPass@1' });
 
         // Set verified=true as if user clicked the email link
         await User.findOneAndUpdate({ email }, { verified: true });
 
-        const pendingUser = await User.findOne({ email });
+        const user = await User.findOne({ email });
+        expect(user.status).toBe(USER_STATUS.ACTIVE);
 
-        // Reject first
-        await userService.rejectUser(pendingUser._id, admin._id);
+        // Admin rejects
+        await userService.rejectUser(user._id, admin._id);
         await expect(
             login({ email, password: 'ValidPass@1' })
         ).rejects.toMatchObject({ statusCode: 401 });
 
-        // Re-approve
-        await userService.approveUser(pendingUser._id, admin._id);
+        // Admin re-approves
+        await userService.approveUser(user._id, admin._id);
         const { token } = await login({ email, password: 'ValidPass@1' });
         expect(token).toBeDefined();
     });

@@ -12,6 +12,7 @@ const {
 const validate = require('../../shared/middlewares/validate');
 const authenticate = require('../../shared/middlewares/authenticate');
 const authorize = require('../../shared/middlewares/authorize');
+const requirePermission = require('../../shared/middlewares/requirePermission');
 
 const router = Router();
 
@@ -50,7 +51,7 @@ router.get(
  */
 router.post(
     '/',
-    authenticate, authorize('ADMIN'),
+    authenticate, authorize('ADMIN', 'SUPERVISOR'), requirePermission('MANAGE_PRODUCTS'),
     createProductValidation, validate,
     productController.createProduct
 );
@@ -65,7 +66,7 @@ router.post(
  */
 router.post(
     '/publish',
-    authenticate, authorize('ADMIN'),
+    authenticate, authorize('ADMIN', 'SUPERVISOR'), requirePermission('MANAGE_PRODUCTS'),
     publishProductValidation, validate,
     productController.publishProduct
 );
@@ -77,7 +78,7 @@ router.post(
  */
 router.patch(
     '/:id',
-    authenticate, authorize('ADMIN'),
+    authenticate, authorize('ADMIN', 'SUPERVISOR'), requirePermission('MANAGE_PRODUCTS'),
     updateProductValidation, validate,
     productController.updateProduct
 );
@@ -89,7 +90,7 @@ router.patch(
  */
 router.patch(
     '/:id/toggle-status',
-    authenticate, authorize('ADMIN'),
+    authenticate, authorize('ADMIN', 'SUPERVISOR'), requirePermission('MANAGE_PRODUCTS'),
     productIdParam, validate,
     productController.toggleStatus
 );

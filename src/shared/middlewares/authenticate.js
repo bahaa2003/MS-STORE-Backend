@@ -30,6 +30,13 @@ const authenticate = catchAsync(async (req, res, next) => {
     // 2. Verify signature
     const decoded = jwt.verify(token, config.jwt.secret);
 
+    // 2b. Reject 2FA-pending tokens — these must be consumed via /verify-2fa only
+    if (decoded.purpose === '2fa-pending') {
+        throw new AuthenticationError(
+            '2FA verification required. Please complete login via the /verify-2fa endpoint.'
+        );
+    }
+
     // 3. Confirm user still exists
     const currentUser = await User.findById(decoded.id);
     if (!currentUser) {

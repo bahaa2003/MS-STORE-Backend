@@ -10,13 +10,26 @@
  *   POST  /api/auth/resend-verification
  *   GET   /api/auth/google                  → Passport redirect to Google
  *   GET   /api/auth/google/callback         → Passport OAuth callback
+ *
+ * 2FA routes:
+ *   POST  /api/auth/2fa/generate            → Generate TOTP secret + QR (authenticated)
+ *   POST  /api/auth/2fa/enable              → Verify + activate 2FA (authenticated)
+ *   POST  /api/auth/2fa/disable             → Deactivate 2FA (authenticated)
+ *   POST  /api/auth/verify-2fa              → Exchange temp token + code for JWT (public)
  */
 
 const { Router } = require('express');
 const passport = require('../../config/google.strategy');
 const authController = require('./auth.controller');
-const { registerValidation, loginValidation } = require('./auth.validation');
+const {
+    registerValidation,
+    loginValidation,
+    enable2FAValidation,
+    disable2FAValidation,
+    verify2FAValidation,
+} = require('./auth.validation');
 const validate = require('../../shared/middlewares/validate');
+const authenticate = require('../../shared/middlewares/authenticate');
 const { body } = require('express-validator');
 const config = require('../../config/config');
 const { authLimiter } = require('../../shared/middlewares/rateLimiter');
@@ -120,5 +133,35 @@ router.get('/google/failure', (req, res) => {
         message: 'Google authentication failed. Please try again.',
     });
 });
+
+// ─── Two-Factor Authentication ─────────────────────────────────────────────────────
+
+/**
+ * @route  POST /api/auth/2fa/generate
+ * @desc   Generate a TOTP secret and return QR code for authenticator app
+ * @access Private (requires valid JWT)
+ */
+router.post('/2fa/generate', authenticate, authController.generate2FA);
+
+/**
+ * @route  POST /api/auth/2fa/enable
+ * @desc   Verify TOTP token and activate 2FA for the authenticated user
+ * @access Private (requires valid JWT)
+ */
+router.post('/2fa/enable', authenticate, enable2FAValidation, validate, authController.enable2FA);
+
+/**
+ * @route  POST /api/auth/2fa/disable
+ * @desc   Deactivate 2FA (requires password or valid TOTP code)
+ * @access Private (requires valid JWT)
+ */
+router.post('/2fa/disable', authenticate, disable2FAValidation, validate, authController.disable2FA);
+
+/**
+ * @route  POST /api/auth/verify-2fa
+ * @desc   Exchange a 2FA temp token + TOTP code for a full auth JWT
+ * @access Public (uses temp token in body, not Bearer header)
+ */
+router.post('/verify-2fa', authLimiter, verify2FAValidation, validate, authController.verify2FA);
 
 module.exports = router;

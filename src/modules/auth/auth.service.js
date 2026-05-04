@@ -4,21 +4,29 @@
  * auth.service.js
  *
  * Authentication business logic:
- *   - register      : email+password registration with email verification
- *   - login         : credential check + status + verification gate
- *   - verifyEmail   : consume email token, mark verified
- *   - resendVerification : re-issue + re-send the verification email
+ *   - register          : email+password registration with email verification
+ *   - login             : credential check + status + verification gate + 2FA gate
+ *   - verifyEmail       : consume email token, mark verified
+ *   - resendVerification: re-issue + re-send the verification email
  *   - loginWithGoogle   : called after successful passport OAuth callback
+ *   - generate2FASecret : create TOTP secret + QR code for user
+ *   - enable2FA         : verify TOTP token and activate 2FA
+ *   - disable2FA        : deactivate 2FA (requires password or valid TOTP code)
+ *   - verify2FA         : consume temp token + TOTP code to issue full JWT
  *
  * Security design:
  *   - Email verification tokens are stored as SHA-256 hashes (never raw)
  *   - Tokens expire in 24 hours
  *   - Password is never stored in raw form (bcrypt via model pre-save hook)
  *   - JWT is only issued when account is ACTIVE (approved by admin)
+ *   - If 2FA is enabled, login issues a short-lived temp token (5 min)
+ *     that must be exchanged via /verify-2fa for the full JWT
  */
 
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
+const speakeasy = require('speakeasy');
+const QRCode = require('qrcode');
 const config = require('../../config/config');
 const { User, ROLES, USER_STATUS } = require('../users/user.model');
 const { getHighestPercentageGroup } = require('../groups/group.service');
@@ -34,10 +42,20 @@ const { USER_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('../audit/audit.cons
 
 // ─── Private Helpers ──────────────────────────────────────────────────────────
 
-/** Sign JWT for a user. */
+/** Sign full-session JWT for a user. */
 const signToken = (userId, role) =>
     jwt.sign({ id: userId, role }, config.jwt.secret, {
         expiresIn: config.jwt.expiresIn,
+    });
+
+/**
+ * Sign a short-lived temporary JWT for 2FA-pending sessions.
+ * This token CANNOT be used to access authenticated routes —
+ * the authenticate middleware rejects tokens with purpose '2fa-pending'.
+ */
+const signTempToken = (userId) =>
+    jwt.sign({ id: userId, purpose: '2fa-pending' }, config.jwt.secret, {
+        expiresIn: '5m',
     });
 
 /**
@@ -66,7 +84,7 @@ const _hashToken = (raw) =>
  * Business rules:
  *  1. Email must be unique.
  *  2. Assigned to the group with the highest markup percentage.
- *  3. Status starts as PENDING — admin must approve before login is allowed.
+ *  3. Status starts as ACTIVE — no admin approval required.
  *  4. verified = false — user must click email link before login is allowed.
  *  5. A verification email is dispatched (fire-and-forget safe).
  */
@@ -98,7 +116,7 @@ const register = async ({ name, email, password, currency, country, phone, usern
         password,
         role: ROLES.CUSTOMER,
         groupId: group._id,
-        status: USER_STATUS.PENDING,
+        status: USER_STATUS.ACTIVE,
         verified: false,
         emailVerificationToken: hashedToken,
         emailVerificationExpires: expiresAt,
@@ -130,7 +148,7 @@ const register = async ({ name, email, password, currency, country, phone, usern
         user: user.toSafeObject(),
         message:
             'Registration successful! Please check your email to verify your account. ' +
-            'After verification, your account will be reviewed by an admin.',
+            'Once verified, you can start using the platform immediately.',
     };
 };
 
@@ -205,6 +223,23 @@ const login = async ({ email, password }) => {
         throw new AuthenticationError('Invalid email or password.');
     }
 
+    // ── Gate 4: Two-Factor Authentication ─────────────────────────────────────
+    if (user.isTwoFactorEnabled) {
+        const tempToken = signTempToken(user._id);
+
+        createAuditLog({
+            actorId: user._id,
+            actorRole: ACTOR_ROLES[user.role] ?? user.role,
+            action: USER_ACTIONS.LOGIN_SUCCESS,
+            entityType: ENTITY_TYPES.USER,
+            entityId: user._id,
+            metadata: { email: user.email, twoFactorPending: true },
+        });
+
+        return { tempToken, requires2FA: true };
+    }
+
+    // ── 5. Issue full JWT ──────────────────────────────────────────────────────
     const token = signToken(user._id, user.role);
 
     createAuditLog({
@@ -337,4 +372,221 @@ const loginWithGoogle = (user) => {
     return { token, user: user.toSafeObject() };
 };
 
-module.exports = { register, login, verifyEmail, resendVerification, loginWithGoogle };
+// ─── generate2FASecret ────────────────────────────────────────────────────────
+
+/**
+ * Generate a TOTP secret and QR code for 2FA setup.
+ * The secret is saved to the user but 2FA is NOT yet enabled —
+ * the user must verify a token via enable2FA() first.
+ *
+ * @param {string|ObjectId} userId
+ * @returns {{ qrCodeUrl: string, secret: string }}
+ */
+const generate2FASecret = async (userId) => {
+    const user = await User.findById(userId);
+    if (!user) throw new NotFoundError('User');
+
+    const secret = speakeasy.generateSecret({
+        name: `DigitalPlatform (${user.email})`,
+        issuer: 'DigitalPlatform',
+    });
+
+    // Persist the secret (not yet enabled)
+    user.twoFactorSecret = secret.base32;
+    await user.save();
+
+    // Generate QR code data URI for authenticator apps
+    const qrCodeUrl = await QRCode.toDataURL(secret.otpauth_url);
+
+    return { qrCodeUrl, secret: secret.base32 };
+};
+
+// ─── enable2FA ────────────────────────────────────────────────────────────────
+
+/**
+ * Verify a TOTP token against the stored secret and activate 2FA.
+ *
+ * @param {string|ObjectId} userId
+ * @param {string}          token  — 6-digit TOTP code from authenticator app
+ */
+const enable2FA = async (userId, token) => {
+    const user = await User.findById(userId).select('+twoFactorSecret');
+    if (!user) throw new NotFoundError('User');
+
+    if (!user.twoFactorSecret) {
+        throw new BusinessRuleError(
+            'No 2FA secret found. Please generate a secret first via /2fa/generate.',
+            'NO_2FA_SECRET'
+        );
+    }
+
+    if (user.isTwoFactorEnabled) {
+        throw new BusinessRuleError(
+            '2FA is already enabled on this account.',
+            'ALREADY_2FA_ENABLED'
+        );
+    }
+
+    const isValid = speakeasy.totp.verify({
+        secret: user.twoFactorSecret,
+        encoding: 'base32',
+        token,
+        window: 1, // allow 1 step tolerance (±30s)
+    });
+
+    if (!isValid) {
+        throw new BusinessRuleError(
+            'Invalid 2FA code. Please try again with a new code from your authenticator app.',
+            'INVALID_2FA_TOKEN'
+        );
+    }
+
+    user.isTwoFactorEnabled = true;
+    await user.save();
+
+    createAuditLog({
+        actorId: user._id,
+        actorRole: ACTOR_ROLES[user.role] ?? user.role,
+        action: USER_ACTIONS.TWO_FACTOR_ENABLED,
+        entityType: ENTITY_TYPES.USER,
+        entityId: user._id,
+        metadata: { email: user.email },
+    });
+
+    return { message: '2FA has been successfully enabled.' };
+};
+
+// ─── disable2FA ───────────────────────────────────────────────────────────────
+
+/**
+ * Disable 2FA for a user. Requires either a valid password or a valid TOTP code
+ * to prevent unauthorized disabling.
+ *
+ * @param {string|ObjectId} userId
+ * @param {{ password?: string, code?: string }} credentials
+ */
+const disable2FA = async (userId, { password, code } = {}) => {
+    const user = await User.findById(userId).select('+twoFactorSecret +password');
+    if (!user) throw new NotFoundError('User');
+
+    if (!user.isTwoFactorEnabled) {
+        throw new BusinessRuleError(
+            '2FA is not currently enabled on this account.',
+            'NOT_2FA_ENABLED'
+        );
+    }
+
+    // Require at least one proof of identity
+    let verified = false;
+
+    if (password && user.password) {
+        verified = await user.comparePassword(password);
+    }
+
+    if (!verified && code && user.twoFactorSecret) {
+        verified = speakeasy.totp.verify({
+            secret: user.twoFactorSecret,
+            encoding: 'base32',
+            token: code,
+            window: 1,
+        });
+    }
+
+    if (!verified) {
+        throw new AuthenticationError(
+            'Invalid credentials. Provide a valid password or 2FA code to disable 2FA.'
+        );
+    }
+
+    user.isTwoFactorEnabled = false;
+    user.twoFactorSecret = null;
+    await user.save();
+
+    createAuditLog({
+        actorId: user._id,
+        actorRole: ACTOR_ROLES[user.role] ?? user.role,
+        action: USER_ACTIONS.TWO_FACTOR_DISABLED,
+        entityType: ENTITY_TYPES.USER,
+        entityId: user._id,
+        metadata: { email: user.email },
+    });
+
+    return { message: '2FA has been successfully disabled.' };
+};
+
+// ─── verify2FA ────────────────────────────────────────────────────────────────
+
+/**
+ * Exchange a 2FA-pending temp token + TOTP code for a full auth JWT.
+ *
+ * @param {string} tempToken — short-lived JWT from login() when 2FA is enabled
+ * @param {string} code      — 6-digit TOTP from authenticator app
+ * @returns {{ token: string, user: Object }}
+ */
+const verify2FA = async (tempToken, code) => {
+    // 1. Verify the temp token
+    let decoded;
+    try {
+        decoded = jwt.verify(tempToken, config.jwt.secret);
+    } catch (err) {
+        if (err.name === 'TokenExpiredError') {
+            throw new AuthenticationError(
+                '2FA verification has expired. Please log in again.'
+            );
+        }
+        throw new AuthenticationError('Invalid temporary token.');
+    }
+
+    // Must be a 2FA-pending token
+    if (decoded.purpose !== '2fa-pending') {
+        throw new AuthenticationError('Invalid temporary token.');
+    }
+
+    // 2. Load user + secret
+    const user = await User.findById(decoded.id).select('+twoFactorSecret');
+    if (!user) {
+        throw new AuthenticationError('The user belonging to this token no longer exists.');
+    }
+
+    if (user.status !== USER_STATUS.ACTIVE) {
+        throw new AuthenticationError('Your account is not active. Contact an administrator.');
+    }
+
+    // 3. Verify TOTP code
+    const isValid = speakeasy.totp.verify({
+        secret: user.twoFactorSecret,
+        encoding: 'base32',
+        token: code,
+        window: 1,
+    });
+
+    if (!isValid) {
+        throw new AuthenticationError('Invalid 2FA code. Please try again.');
+    }
+
+    // 4. Issue full JWT
+    const fullToken = signToken(user._id, user.role);
+
+    createAuditLog({
+        actorId: user._id,
+        actorRole: ACTOR_ROLES[user.role] ?? user.role,
+        action: USER_ACTIONS.LOGIN_SUCCESS,
+        entityType: ENTITY_TYPES.USER,
+        entityId: user._id,
+        metadata: { email: user.email, twoFactorVerified: true },
+    });
+
+    return { token: fullToken, user: user.toSafeObject() };
+};
+
+module.exports = {
+    register,
+    login,
+    verifyEmail,
+    resendVerification,
+    loginWithGoogle,
+    generate2FASecret,
+    enable2FA,
+    disable2FA,
+    verify2FA,
+};

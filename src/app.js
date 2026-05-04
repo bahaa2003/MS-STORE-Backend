@@ -25,6 +25,8 @@ const providerRoutes = require('./modules/providers/provider.routes');
 const adminCatalogRoutes = require('./modules/admin/admin.catalog.routes');
 const adminRoutes = require('./modules/admin/admin.routes');    // ← dashboard router
 const meRoutes = require('./modules/me/me.routes');          // ← user panel
+const targetRoutes = require('./modules/targets/target.routes'); // ← target coin purchases
+const notificationRoutes = require('./modules/notifications/notification.routes'); // ← notifications
 const currencyRoutes = require('./modules/currency/currency.routes');
 const uploadRoutes = require('./shared/routes/upload.routes');
 const path = require('path');
@@ -111,6 +113,8 @@ app.use(`${API_PREFIX}/providers`, providerRoutes);
 
 // ── User Panel ─────────────────────────────────────────────────────────────────
 app.use(`${API_PREFIX}/me`, meRoutes);
+app.use(`${API_PREFIX}/me/targets`, targetRoutes);
+app.use(`${API_PREFIX}/me/notifications`, notificationRoutes);
 
 // ── Public Categories (no auth required — used by storefront/guest pages) ─────
 app.get(`${API_PREFIX}/categories`, async (req, res) => {
