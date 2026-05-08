@@ -17,6 +17,15 @@ const createOrderValidation = [
     body('orderFieldsValues')
         .optional({ nullable: true })
         .isObject().withMessage('orderFieldsValues must be an object'),
+
+    body('customInputs')
+        .optional({ nullable: true })
+        .custom((value) => {
+            if (value == null) return true;
+            if (Array.isArray(value)) return true;
+            if (typeof value === 'object') return true;
+            throw new Error('customInputs must be an object or an array');
+        }),
 ];
 
 const orderIdParamValidation = [

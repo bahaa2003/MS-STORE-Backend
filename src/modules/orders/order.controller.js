@@ -4,14 +4,59 @@ const orderService = require('./order.service');
 const { sendSuccess, sendCreated, sendPaginated } = require('../../shared/utils/apiResponse');
 const catchAsync = require('../../shared/utils/catchAsync');
 
+const resolveAuditContext = (req) => req.auditContext ?? {
+    actorId: req.user?._id,
+    actorRole: String(req.user?.role || '').toUpperCase(),
+    ipAddress: req.ip ?? null,
+    userAgent: req.get('User-Agent') ?? null,
+};
+
+const normalizeCustomInputsPayload = (customInputs) => {
+    if (!customInputs) return {};
+
+    if (Array.isArray(customInputs)) {
+        return customInputs.reduce((acc, item) => {
+            if (!item || typeof item !== 'object') return acc;
+
+            const fieldKey = String(
+                item.key ?? item.name ?? item.label ?? item.field ?? item.id ?? ''
+            ).trim();
+            if (!fieldKey) return acc;
+
+            const hasValue = Object.prototype.hasOwnProperty.call(item, 'value');
+            const resolvedValue = hasValue
+                ? item.value
+                : (item.input ?? item.answer ?? item.data);
+
+            if (resolvedValue !== undefined) {
+                acc[fieldKey] = resolvedValue;
+            }
+
+            return acc;
+        }, {});
+    }
+
+    if (typeof customInputs === 'object') {
+        return { ...customInputs };
+    }
+
+    return {};
+};
+
 // ── Customer Endpoints ────────────────────────────────────────────────────────
 
 const createOrder = catchAsync(async (req, res) => {
-    const { productId, quantity, orderFieldsValues, link, target } = req.body;
+    const { productId, quantity, orderFieldsValues, customInputs, link, target } = req.body;
 
     // Merge top-level link/target into orderFieldsValues so they always
     // reach customerInput (SMM providers need these as provider params).
-    const mergedFields = { ...orderFieldsValues };
+    const normalizedOrderFieldsValues = (orderFieldsValues && typeof orderFieldsValues === 'object' && !Array.isArray(orderFieldsValues))
+        ? orderFieldsValues
+        : {};
+    const mergedFields = {
+        ...normalizedOrderFieldsValues,
+        ...normalizeCustomInputsPayload(customInputs),
+    };
     if (link && !mergedFields.link) mergedFields.link = link;
     if (target && !mergedFields.target) mergedFields.target = target;
     const finalFields = Object.keys(mergedFields).length > 0 ? mergedFields : null;
@@ -76,12 +121,12 @@ const adminGetOrder = catchAsync(async (req, res) => {
 });
 
 const failOrder = catchAsync(async (req, res) => {
-    const order = await orderService.markOrderAsFailed(req.params.id);
+    const order = await orderService.markOrderAsFailed(req.params.id, resolveAuditContext(req));
     sendSuccess(res, order, 'Order marked as failed and refund issued.');
 });
 
 const completeOrder = catchAsync(async (req, res) => {
-    const order = await orderService.markOrderAsCompleted(req.params.id);
+    const order = await orderService.markOrderAsCompleted(req.params.id, resolveAuditContext(req));
     sendSuccess(res, order, 'Order marked as completed.');
 });
 

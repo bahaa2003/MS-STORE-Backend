@@ -95,7 +95,9 @@ const createProduct = async ({
     displayOrder = 0,
     isActive = true,
     executionType = 'manual',
+    costPrice = 0,
     orderFields = [],
+    dynamicFields = [],
     providerMapping = {},
     provider = null,
     providerProduct = null,
@@ -163,7 +165,9 @@ const createProduct = async ({
         markupType,
         markupValue,
         executionType: resolvedExecutionType,
+        costPrice,
         orderFields,
+        dynamicFields,
         providerMapping,
         provider,
         providerProduct,
@@ -208,6 +212,8 @@ const publishFromProviderProduct = async ({
     markupType = MARKUP_TYPES.PERCENTAGE,
     markupValue = 0,
     executionType = 'automatic',
+    costPrice = 0,
+    dynamicFields = [],
     createdBy = null,            // accepted here for the createProductFromProvider alias
 }, adminUserId = null) => {
     // Resolve createdBy from either param location
@@ -285,6 +291,8 @@ const publishFromProviderProduct = async ({
         markupType,
         markupValue,
         executionType,
+        costPrice,
+        dynamicFields,
         provider: pp.provider._id,
         providerProduct: pp._id,
         createdBy: resolvedCreatedBy,
@@ -320,7 +328,7 @@ const updateProduct = async (productId, updates) => {
     const ALLOWED = [
         'name', 'description', 'image', 'category', 'displayOrder', 'isActive',
         'basePrice', 'minQty', 'maxQty', 'pricingMode', 'markupType', 'markupValue',
-        'executionType', 'orderFields', 'providerMapping',
+        'executionType', 'costPrice', 'orderFields', 'dynamicFields', 'providerMapping',
         'provider', 'providerProduct',
         'syncPriceWithProvider', 'enableManualPrice', 'manualPriceAdjustment', 'finalPrice',
     ];

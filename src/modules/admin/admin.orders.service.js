@@ -16,6 +16,13 @@ const { NotFoundError, BusinessRuleError } = require('../../shared/errors/AppErr
 const { createAuditLog } = require('../audit/audit.service');
 const { ADMIN_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('../audit/audit.constants');
 
+const resolveAuditContext = (adminId, auditContext = null) => ({
+    actorId: auditContext?.actorId ?? adminId,
+    actorRole: auditContext?.actorRole ?? ACTOR_ROLES.ADMIN,
+    ipAddress: auditContext?.ipAddress ?? null,
+    userAgent: auditContext?.userAgent ?? null,
+});
+
 // ─── List (admin) ─────────────────────────────────────────────────────────────
 
 /**
@@ -119,7 +126,8 @@ const getOrderById = async (id) => {
  * @param {string} orderId
  * @param {string} adminId
  */
-const retryOrder = async (orderId, adminId) => {
+const retryOrder = async (orderId, adminId, auditContext = null) => {
+    const ctx = resolveAuditContext(adminId, auditContext);
     const order = await Order.findById(orderId)
         .populate({ path: 'productId', populate: { path: 'provider' } });
 
@@ -157,12 +165,14 @@ const retryOrder = async (orderId, adminId) => {
     await order.save();
 
     createAuditLog({
-        actorId: adminId,
-        actorRole: ACTOR_ROLES.ADMIN,
+        actorId: ctx.actorId,
+        actorRole: ctx.actorRole,
         action: ADMIN_ACTIONS.ORDER_RETRIED,
         entityType: ENTITY_TYPES.ORDER,
         entityId: order._id,
         metadata: { orderId, providerOrderId: order.providerOrderId, retryCount: order.retryCount },
+        ipAddress: ctx.ipAddress,
+        userAgent: ctx.userAgent,
     });
 
     return order;
@@ -183,7 +193,8 @@ const retryOrder = async (orderId, adminId) => {
  * @param {string} adminId
  * @param {number} [remains=0] - undelivered units for partial refund
  */
-const refundOrder = async (orderId, adminId, remains = 0) => {
+const refundOrder = async (orderId, adminId, remains = 0, auditContext = null) => {
+    const ctx = resolveAuditContext(adminId, auditContext);
     const order = await Order.findById(orderId);
     if (!order) throw new NotFoundError('Order');
 
@@ -199,11 +210,6 @@ const refundOrder = async (orderId, adminId, remains = 0) => {
         }
     }
 
-    const auditContext = {
-        actorId: adminId,
-        actorRole: ACTOR_ROLES.ADMIN,
-    };
-
     const remainsCount = parseInt(remains, 10) || 0;
     let refunded;
 
@@ -213,15 +219,15 @@ const refundOrder = async (orderId, adminId, remains = 0) => {
             order.status = ORDER_STATUS.PARTIAL;
             await order.save();
         }
-        refunded = await processOrderRefund(orderId, remainsCount, auditContext);
+        refunded = await processOrderRefund(orderId, remainsCount, ctx);
     } else {
         // Full refund — use existing markOrderAsFailed for FAILED status path
-        refunded = await markOrderAsFailed(orderId, auditContext);
+        refunded = await markOrderAsFailed(orderId, ctx);
     }
 
     createAuditLog({
-        actorId: adminId,
-        actorRole: ACTOR_ROLES.ADMIN,
+        actorId: ctx.actorId,
+        actorRole: ctx.actorRole,
         action: ADMIN_ACTIONS.ORDER_REFUNDED,
         entityType: ENTITY_TYPES.ORDER,
         entityId: order._id,
@@ -231,6 +237,8 @@ const refundOrder = async (orderId, adminId, remains = 0) => {
             remains: remainsCount,
             isPartial: remainsCount > 0,
         },
+        ipAddress: ctx.ipAddress,
+        userAgent: ctx.userAgent,
     });
 
     return refunded;
@@ -247,7 +255,8 @@ const refundOrder = async (orderId, adminId, remains = 0) => {
  *   'Cancelled'  → ORDER_STATUS.FAILED
  *   'Pending'    → ORDER_STATUS.PROCESSING (no change if already PROCESSING)
  */
-const syncOrderProviderStatus = async (orderId, adminId) => {
+const syncOrderProviderStatus = async (orderId, adminId, auditContext = null) => {
+    const ctx = resolveAuditContext(adminId, auditContext);
     const order = await Order.findById(orderId).populate('product');
     if (!order) throw new NotFoundError('Order');
 
@@ -323,8 +332,10 @@ const syncOrderProviderStatus = async (orderId, adminId) => {
         const remains = newStatus === 'PARTIAL' ? (order.remains || 0) : 0;
         try {
             await processOrderRefund(order._id, remains, {
-                actorId: adminId,
-                actorRole: ACTOR_ROLES.ADMIN,
+                actorId: ctx.actorId,
+                actorRole: ctx.actorRole,
+                ipAddress: ctx.ipAddress,
+                userAgent: ctx.userAgent,
             });
         } catch (refundErr) {
             // Don't break the sync — log the refund failure
@@ -333,8 +344,8 @@ const syncOrderProviderStatus = async (orderId, adminId) => {
     }
 
     createAuditLog({
-        actorId: adminId,
-        actorRole: ACTOR_ROLES.ADMIN,
+        actorId: ctx.actorId,
+        actorRole: ctx.actorRole,
         action: ADMIN_ACTIONS.ORDER_RETRIED,  // reuse — closest existing action
         entityType: ENTITY_TYPES.ORDER,
         entityId: order._id,
@@ -346,6 +357,8 @@ const syncOrderProviderStatus = async (orderId, adminId) => {
             statusChanged,
             newStatus,
         },
+        ipAddress: ctx.ipAddress,
+        userAgent: ctx.userAgent,
     });
 
     return order;
@@ -362,7 +375,8 @@ const syncOrderProviderStatus = async (orderId, adminId) => {
  *   - Cannot complete an already COMPLETED order
  *   - Cannot complete a FAILED (refunded) order
  */
-const completeOrder = async (orderId, adminId) => {
+const completeOrder = async (orderId, adminId, auditContext = null) => {
+    const ctx = resolveAuditContext(adminId, auditContext);
     const order = await Order.findById(orderId);
     if (!order) throw new NotFoundError('Order');
 
@@ -405,8 +419,8 @@ const completeOrder = async (orderId, adminId) => {
     await order.save();
 
     createAuditLog({
-        actorId: adminId,
-        actorRole: ACTOR_ROLES.ADMIN,
+        actorId: ctx.actorId,
+        actorRole: ctx.actorRole,
         action: ADMIN_ACTIONS.ORDER_COMPLETED,
         entityType: ENTITY_TYPES.ORDER,
         entityId: order._id,
@@ -416,6 +430,8 @@ const completeOrder = async (orderId, adminId) => {
             newStatus: ORDER_STATUS.COMPLETED,
             reDeducted: wasRefunded,
         },
+        ipAddress: ctx.ipAddress,
+        userAgent: ctx.userAgent,
     });
 
     return order;
@@ -441,11 +457,11 @@ const completeOrder = async (orderId, adminId) => {
  * @param {string} [opts.rejectionReason] - required when rejecting
  * @returns {Promise<Order>}
  */
-const updateOrderStatus = async (orderId, status, adminId, { rejectionReason } = {}) => {
+const updateOrderStatus = async (orderId, status, adminId, { rejectionReason, auditContext } = {}) => {
     const normalised = String(status || '').trim().toLowerCase();
 
     if (['completed', 'approved'].includes(normalised)) {
-        return completeOrder(orderId, adminId);
+        return completeOrder(orderId, adminId, auditContext);
     }
 
     if (['failed', 'rejected', 'denied', 'refunded', 'cancelled', 'canceled'].includes(normalised)) {
@@ -456,11 +472,11 @@ const updateOrderStatus = async (orderId, status, adminId, { rejectionReason } =
                 rejectionReason: String(rejectionReason).trim(),
             });
         }
-        return refundOrder(orderId, adminId);
+        return refundOrder(orderId, adminId, 0, auditContext);
     }
 
     if (['processing', 'retry', 'pending'].includes(normalised)) {
-        return retryOrder(orderId, adminId);
+        return retryOrder(orderId, adminId, auditContext);
     }
 
     throw new BusinessRuleError(

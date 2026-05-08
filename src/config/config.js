@@ -4,6 +4,26 @@
  * Centralized application configuration.
  * All environment variable access should go through this file.
  */
+const parseBoolean = (value, defaultValue = false) => {
+    if (value === undefined || value === null || value === '') return defaultValue;
+    return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+};
+
+const parseNumber = (value, defaultValue) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : defaultValue;
+};
+
+const DEFAULT_RECEIPT_OCR_KEYWORDS = [
+    'تم',
+    'نجاح',
+    'فودافون',
+    'vodafone',
+    'cash',
+    'كاش',
+    'تحويل',
+];
+
 const config = {
     env: process.env.NODE_ENV || 'development',
     port: parseInt(process.env.PORT, 10) || 5000,
@@ -50,6 +70,30 @@ const config = {
     // ── CORS ────────────────────────────────────────────────────────────────────
     cors: {
         allowedOrigins: process.env.ALLOWED_ORIGINS || 'http://localhost:3000',
+    },
+
+    // ── Receipt Analyzer (anti-fraud checks for deposit receipts) ──────────────
+    receiptAnalyzer: {
+        enableOcr: parseBoolean(process.env.RECEIPT_ANALYZER_ENABLE_OCR, false),
+        minEntropy: parseNumber(process.env.RECEIPT_ANALYZER_MIN_ENTROPY, 1.0),
+        blackMeanMax: parseNumber(process.env.RECEIPT_ANALYZER_BLACK_MEAN_MAX, 8),
+        whiteMeanMin: parseNumber(process.env.RECEIPT_ANALYZER_WHITE_MEAN_MIN, 247),
+        solidStdDevMax: parseNumber(process.env.RECEIPT_ANALYZER_SOLID_STDDEV_MAX, 2.5),
+        lowEntropyStdDevMax: parseNumber(process.env.RECEIPT_ANALYZER_LOW_ENTROPY_STDDEV_MAX, 3.2),
+        maxInputPixels: parseNumber(process.env.RECEIPT_ANALYZER_MAX_INPUT_PIXELS, 40_000_000),
+        ocrTimeoutMs: parseNumber(process.env.RECEIPT_ANALYZER_OCR_TIMEOUT_MS, 3500),
+        ocrResizeWidth: parseNumber(process.env.RECEIPT_ANALYZER_OCR_RESIZE_WIDTH, 1200),
+        ocrMinKeywordMatches: parseNumber(process.env.RECEIPT_ANALYZER_OCR_MIN_KEYWORD_MATCHES, 1),
+        ocrKeywords: String(process.env.RECEIPT_ANALYZER_OCR_KEYWORDS || '')
+            .split(',')
+            .map((keyword) => keyword.trim())
+            .filter(Boolean)
+            .length
+            ? String(process.env.RECEIPT_ANALYZER_OCR_KEYWORDS || '')
+                .split(',')
+                .map((keyword) => keyword.trim())
+                .filter(Boolean)
+            : DEFAULT_RECEIPT_OCR_KEYWORDS,
     },
 };
 

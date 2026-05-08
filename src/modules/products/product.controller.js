@@ -26,6 +26,7 @@ const SENSITIVE_FIELDS = [
     'providerId',
     'externalProductId',
     'externalProductName',
+    'costPrice',
     '__v',
 ];
 

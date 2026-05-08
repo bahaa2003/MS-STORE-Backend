@@ -1,7 +1,7 @@
 'use strict';
 
 const { body, param, query } = require('express-validator');
-const { PRICING_MODES, MARKUP_TYPES, EXECUTION_TYPES } = require('./product.model');
+const { PRICING_MODES, MARKUP_TYPES, EXECUTION_TYPES, DYNAMIC_FIELD_TYPES } = require('./product.model');
 const { isPositive } = require('../../shared/utils/decimalPrecision');
 
 /**
@@ -13,6 +13,29 @@ const isPositiveDecimalString = (value) => {
     const n = Number(value);
     if (isNaN(n)) return false;
     return isPositive(value);
+};
+
+const validateDynamicFields = (fields = []) => {
+    if (!Array.isArray(fields)) return true;
+
+    const names = new Set();
+    for (const field of fields) {
+        if (!field || typeof field !== 'object') {
+            throw new Error('Each dynamicFields item must be an object');
+        }
+
+        const normalizedName = String(field.name || '').trim().toLowerCase();
+        if (!normalizedName) {
+            throw new Error('dynamicFields[].name is required');
+        }
+
+        if (names.has(normalizedName)) {
+            throw new Error('dynamicFields names must be unique');
+        }
+        names.add(normalizedName);
+    }
+
+    return true;
 };
 
 // ─── User-facing / shared validation ─────────────────────────────────────────
@@ -41,6 +64,10 @@ const createProductValidation = [
     body('basePrice')
         .notEmpty().withMessage('basePrice is required')
         .custom((v) => isPositiveDecimalString(v)).withMessage('basePrice must be > 0'),
+
+    body('costPrice')
+        .optional()
+        .isFloat({ min: 0 }).withMessage('costPrice must be >= 0'),
 
     body('minQty')
         .notEmpty().withMessage('minQty is required')
@@ -110,6 +137,32 @@ const createProductValidation = [
     body('manualPriceAdjustment')
         .optional()
         .custom((v) => v == null || !isNaN(Number(v))).withMessage('manualPriceAdjustment must be a valid decimal'),
+
+    body('dynamicFields')
+        .optional()
+        .isArray().withMessage('dynamicFields must be an array')
+        .custom(validateDynamicFields),
+
+    body('dynamicFields.*.name')
+        .optional()
+        .isString().withMessage('dynamicFields[].name must be a string')
+        .trim()
+        .notEmpty().withMessage('dynamicFields[].name is required'),
+
+    body('dynamicFields.*.label')
+        .optional()
+        .isString().withMessage('dynamicFields[].label must be a string')
+        .trim()
+        .notEmpty().withMessage('dynamicFields[].label is required'),
+
+    body('dynamicFields.*.type')
+        .optional()
+        .isIn(DYNAMIC_FIELD_TYPES)
+        .withMessage(`dynamicFields[].type must be one of: ${DYNAMIC_FIELD_TYPES.join(', ')}`),
+
+    body('dynamicFields.*.required')
+        .optional()
+        .isBoolean().withMessage('dynamicFields[].required must be a boolean'),
 ];
 
 // ─── Admin: publish from provider product ────────────────────────────────────
@@ -131,6 +184,10 @@ const publishProductValidation = [
     body('basePrice')
         .optional({ nullable: true })
         .custom((v) => v == null || isPositiveDecimalString(v)).withMessage('basePrice must be > 0, if provided'),
+
+    body('costPrice')
+        .optional()
+        .isFloat({ min: 0 }).withMessage('costPrice must be >= 0'),
 
     body('minQty')
         .optional()
@@ -174,6 +231,32 @@ const publishProductValidation = [
         .optional()
         .isIn(Object.values(EXECUTION_TYPES))
         .withMessage(`executionType must be one of: ${Object.values(EXECUTION_TYPES).join(', ')}`),
+
+    body('dynamicFields')
+        .optional()
+        .isArray().withMessage('dynamicFields must be an array')
+        .custom(validateDynamicFields),
+
+    body('dynamicFields.*.name')
+        .optional()
+        .isString().withMessage('dynamicFields[].name must be a string')
+        .trim()
+        .notEmpty().withMessage('dynamicFields[].name is required'),
+
+    body('dynamicFields.*.label')
+        .optional()
+        .isString().withMessage('dynamicFields[].label must be a string')
+        .trim()
+        .notEmpty().withMessage('dynamicFields[].label is required'),
+
+    body('dynamicFields.*.type')
+        .optional()
+        .isIn(DYNAMIC_FIELD_TYPES)
+        .withMessage(`dynamicFields[].type must be one of: ${DYNAMIC_FIELD_TYPES.join(', ')}`),
+
+    body('dynamicFields.*.required')
+        .optional()
+        .isBoolean().withMessage('dynamicFields[].required must be a boolean'),
 ];
 
 // ─── Admin: update product ────────────────────────────────────────────────────
@@ -193,6 +276,10 @@ const updateProductValidation = [
     body('basePrice')
         .optional()
         .custom((v) => v == null || isPositiveDecimalString(v)).withMessage('basePrice must be > 0'),
+
+    body('costPrice')
+        .optional()
+        .isFloat({ min: 0 }).withMessage('costPrice must be >= 0'),
 
     body('minQty')
         .optional()
@@ -256,6 +343,32 @@ const updateProductValidation = [
     body('providerProduct')
         .optional({ nullable: true })
         .isMongoId().withMessage('providerProduct must be a valid ObjectId'),
+
+    body('dynamicFields')
+        .optional()
+        .isArray().withMessage('dynamicFields must be an array')
+        .custom(validateDynamicFields),
+
+    body('dynamicFields.*.name')
+        .optional()
+        .isString().withMessage('dynamicFields[].name must be a string')
+        .trim()
+        .notEmpty().withMessage('dynamicFields[].name is required'),
+
+    body('dynamicFields.*.label')
+        .optional()
+        .isString().withMessage('dynamicFields[].label must be a string')
+        .trim()
+        .notEmpty().withMessage('dynamicFields[].label is required'),
+
+    body('dynamicFields.*.type')
+        .optional()
+        .isIn(DYNAMIC_FIELD_TYPES)
+        .withMessage(`dynamicFields[].type must be one of: ${DYNAMIC_FIELD_TYPES.join(', ')}`),
+
+    body('dynamicFields.*.required')
+        .optional()
+        .isBoolean().withMessage('dynamicFields[].required must be a boolean'),
 ];
 
 module.exports = {

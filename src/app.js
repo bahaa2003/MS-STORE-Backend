@@ -61,6 +61,7 @@ app.use(
     cors({
         origin: getAllowedOrigins(),
         methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'],
+        credentials: true,
     })
 );
 

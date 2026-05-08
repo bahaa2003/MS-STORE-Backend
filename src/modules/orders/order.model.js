@@ -357,6 +357,15 @@ const orderSchema = new mongoose.Schema(
             },
             default: null,
         },
+
+        /**
+         * Backward/forward-compatible custom input payload snapshot.
+         * Mirrors the validated values map used for dynamic product fields.
+         */
+        customInputs: {
+            type: mongoose.Schema.Types.Mixed,
+            default: null,
+        },
     },
     {
         timestamps: true,

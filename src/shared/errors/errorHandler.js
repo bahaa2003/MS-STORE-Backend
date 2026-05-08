@@ -30,7 +30,9 @@ const handleValidationError = (err) => {
         field: el.path,
         message: el.message,
     }));
-    return new AppError('Validation failed', 400, 'VALIDATION_ERROR');
+    const appError = new AppError('Validation failed', 400, 'VALIDATION_ERROR');
+    appError.errors = errors;
+    return appError;
 };
 
 /**

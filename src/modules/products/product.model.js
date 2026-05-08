@@ -39,6 +39,8 @@ const FIELD_TYPES = Object.freeze({
     DATE: 'date',
 });
 
+const DYNAMIC_FIELD_TYPES = Object.freeze(['text', 'number', 'email', 'select']);
+
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
 const productSchema = new mongoose.Schema(
@@ -112,6 +114,16 @@ const productSchema = new mongoose.Schema(
             required: [true, 'Base price is required'],
             get: (v) => String(v ?? '0'),
             set: (v) => String(v ?? '0'),
+        },
+
+        /**
+         * Manual product unit cost (in USD) used for profit calculations.
+         * For provider-linked products, providerPrice remains the cost source.
+         */
+        costPrice: {
+            type: Number,
+            default: 0,
+            min: [0, 'costPrice cannot be negative'],
         },
 
         /**
@@ -362,6 +374,38 @@ const productSchema = new mongoose.Schema(
             default: [],
         },
 
+        /**
+         * Lightweight dynamic fields definition used by the admin form builder.
+         * Supports frontend payloads like:
+         *   { "Player ID": "123", "Server": "MENA" }
+         */
+        dynamicFields: {
+            type: [
+                {
+                    name: {
+                        type: String,
+                        trim: true,
+                        required: [true, 'dynamicField.name is required'],
+                    },
+                    label: {
+                        type: String,
+                        trim: true,
+                        required: [true, 'dynamicField.label is required'],
+                    },
+                    type: {
+                        type: String,
+                        enum: DYNAMIC_FIELD_TYPES,
+                        default: 'text',
+                    },
+                    required: {
+                        type: Boolean,
+                        default: true,
+                    },
+                },
+            ],
+            default: [],
+        },
+
         // ── Provider Field Mapping ─────────────────────────────────────────────
 
         /**
@@ -417,4 +461,12 @@ const computeFinalPrice = (providerPrice, markupType, markupValue) => {
 
 const Product = mongoose.model('Product', productSchema);
 
-module.exports = { Product, PRICING_MODES, MARKUP_TYPES, EXECUTION_TYPES, FIELD_TYPES, computeFinalPrice };
+module.exports = {
+    Product,
+    PRICING_MODES,
+    MARKUP_TYPES,
+    EXECUTION_TYPES,
+    FIELD_TYPES,
+    DYNAMIC_FIELD_TYPES,
+    computeFinalPrice,
+};

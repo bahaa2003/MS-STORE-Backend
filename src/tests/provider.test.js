@@ -818,3 +818,70 @@ describe('[8] syncAllProviders', () => {
         expect(results.length).toBe(allActive.length);
     });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [9] Safe Provider Deletion
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('[9] Safe Provider Deletion', () => {
+    it('detaches linked products, converts them to manual, then deletes the provider', async () => {
+        const provider = await makeProvider({ name: `mock-safe-delete-${Date.now()}` });
+
+        await syncService.syncProvider(provider._id, {
+            products: [{
+                externalProductId: 'SAFE-PP-1',
+                rawName: 'Safe Delete Product',
+                rawPrice: 25.00,
+                minQty: 1,
+                maxQty: 100,
+                isActive: true,
+            }],
+        });
+
+        const providerProduct = await ProviderProduct.findOne({
+            provider: provider._id,
+            externalProductId: 'SAFE-PP-1',
+        });
+
+        const linkedProduct = await Product.create({
+            name: `Linked-${Date.now()}`,
+            basePrice: 40,
+            minQty: 1,
+            maxQty: 10,
+            isActive: true,
+            pricingMode: PRICING_MODES.SYNC,
+            executionType: 'automatic',
+            syncPriceWithProvider: true,
+            provider: provider._id,
+            providerProduct: providerProduct._id,
+        });
+
+        await Product.create({
+            name: `Unlinked-${Date.now()}`,
+            basePrice: 12,
+            minQty: 1,
+            maxQty: 5,
+            isActive: true,
+            executionType: 'manual',
+        });
+
+        const result = await providerService.deleteProvider(provider._id);
+        expect(result.detachedProducts).toBe(1);
+
+        const deletedProvider = await Provider.findById(provider._id);
+        expect(deletedProvider).toBeNull();
+
+        const refreshedLinkedProduct = await Product.findById(linkedProduct._id);
+        expect(refreshedLinkedProduct.provider).toBeNull();
+        expect(refreshedLinkedProduct.providerProduct).toBeNull();
+        expect(refreshedLinkedProduct.pricingMode).toBe(PRICING_MODES.MANUAL);
+        expect(refreshedLinkedProduct.executionType).toBe('manual');
+        expect(refreshedLinkedProduct.syncPriceWithProvider).toBe(false);
+    });
+
+    it('throws NotFoundError when deleting a non-existent provider', async () => {
+        await expect(
+            providerService.deleteProvider(new mongoose.Types.ObjectId())
+        ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    });
+});

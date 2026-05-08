@@ -2,7 +2,7 @@
 
 const { Provider } = require('./provider.model');
 const { ProviderProduct } = require('./providerProduct.model');
-const { Product, PRICING_MODES } = require('../products/product.model');
+const { Product, PRICING_MODES, EXECUTION_TYPES } = require('../products/product.model');
 const {
     NotFoundError,
     ConflictError,
@@ -44,6 +44,44 @@ const updateProvider = async (providerId, updates) => {
     );
     if (!p) throw new NotFoundError('Provider');
     return p;
+};
+
+const deleteProvider = async (providerId) => {
+    const provider = await Provider.findById(providerId);
+    if (!provider) throw new NotFoundError('Provider');
+
+    const providerProducts = await ProviderProduct.find({ provider: providerId })
+        .select('_id')
+        .lean();
+    const providerProductIds = providerProducts.map((item) => item._id);
+
+    const detachFilter = providerProductIds.length > 0
+        ? {
+            $or: [
+                { provider: providerId },
+                { providerProduct: { $in: providerProductIds } },
+            ],
+        }
+        : { provider: providerId };
+
+    const detachResult = await Product.updateMany(detachFilter, {
+        $set: {
+            provider: null,
+            providerProduct: null,
+            pricingMode: PRICING_MODES.MANUAL,
+            executionType: EXECUTION_TYPES.MANUAL,
+            syncPriceWithProvider: false,
+            enableManualPrice: false,
+            providerPrice: null,
+        },
+    });
+
+    await Provider.deleteOne({ _id: providerId });
+
+    return {
+        provider,
+        detachedProducts: detachResult.modifiedCount || 0,
+    };
 };
 
 // =============================================================================
@@ -192,6 +230,7 @@ module.exports = {
     listProviders,
     getProviderById,
     updateProvider,
+    deleteProvider,
     listProviderProducts,
     publishProduct,
     updatePublishedProduct,

@@ -14,6 +14,10 @@ const {
 } = require('./testHelpers');
 const targetSvc = require('../modules/targets/target.service');
 const { TargetOrder, TARGET_ORDER_STATUS } = require('../modules/targets/target.model');
+const { AuditLog } = require('../modules/audit/audit.model');
+const { TARGET_ORDER_ACTIONS, ACTOR_ROLES } = require('../modules/audit/audit.constants');
+
+const flushAudit = () => new Promise((resolve) => setTimeout(resolve, 100));
 
 describe('Target app purchasing', () => {
     beforeAll(connectTestDB);
@@ -112,5 +116,69 @@ describe('Target app purchasing', () => {
 
         const reviewed = await TargetOrder.findById(order._id);
         expect(reviewed.status).toBe(TARGET_ORDER_STATUS.APPROVED);
+    });
+
+    test('writes target approval/rejection audit logs with supervisor actor role', async () => {
+        const { customer } = await createCustomerWithGroup();
+        const supervisor = await createAdmin({ role: ACTOR_ROLES.SUPERVISOR });
+        const app = await targetSvc.createTargetApp({
+            name: 'Live Coins',
+            unitPrice: 1.5,
+            allowedPaymentMethods: ['Vodafone Cash'],
+        });
+
+        const approvalOrder = await targetSvc.createTargetOrder({
+            userId: customer._id,
+            appId: app._id,
+            coinAmount: 8,
+            senderId: 'approve-1',
+            transferNumber: '01000000003',
+            paymentMethod: 'Vodafone Cash',
+            screenshotProof: 'uploads/targets/proof-approve.png',
+        });
+
+        await targetSvc.approveTargetOrder(
+            approvalOrder._id,
+            supervisor._id,
+            { actorId: supervisor._id, actorRole: ACTOR_ROLES.SUPERVISOR }
+        );
+
+        const rejectionOrder = await targetSvc.createTargetOrder({
+            userId: customer._id,
+            appId: app._id,
+            coinAmount: 6,
+            senderId: 'reject-1',
+            transferNumber: '01000000004',
+            paymentMethod: 'Vodafone Cash',
+            screenshotProof: 'uploads/targets/proof-reject.png',
+        });
+
+        await targetSvc.rejectTargetOrder(
+            rejectionOrder._id,
+            supervisor._id,
+            'Invalid transfer screenshot',
+            { actorId: supervisor._id, actorRole: ACTOR_ROLES.SUPERVISOR }
+        );
+
+        await flushAudit();
+
+        const [approveLog, rejectLog] = await Promise.all([
+            AuditLog.findOne({
+                action: TARGET_ORDER_ACTIONS.APPROVED,
+                entityId: approvalOrder._id,
+            }).lean(),
+            AuditLog.findOne({
+                action: TARGET_ORDER_ACTIONS.REJECTED,
+                entityId: rejectionOrder._id,
+            }).lean(),
+        ]);
+
+        expect(approveLog).not.toBeNull();
+        expect(approveLog.actorId.toString()).toBe(supervisor._id.toString());
+        expect(approveLog.actorRole).toBe(ACTOR_ROLES.SUPERVISOR);
+
+        expect(rejectLog).not.toBeNull();
+        expect(rejectLog.actorId.toString()).toBe(supervisor._id.toString());
+        expect(rejectLog.actorRole).toBe(ACTOR_ROLES.SUPERVISOR);
     });
 });

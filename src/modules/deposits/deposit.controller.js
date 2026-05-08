@@ -1,10 +1,78 @@
 'use strict';
 
+const fs = require('fs');
 const { Currency } = require('../currency/currency.model');
 const depositService = require('./deposit.service');
 const { sendSuccess, sendCreated, sendPaginated } = require('../../shared/utils/apiResponse');
 const catchAsync = require('../../shared/utils/catchAsync');
-const { BusinessRuleError } = require('../../shared/errors/AppError');
+const { AppError, BusinessRuleError } = require('../../shared/errors/AppError');
+const { analyzeReceiptBuffer } = require('../../shared/services/receiptAnalyzer.service');
+
+const INVALID_RECEIPT_MESSAGE = 'صورة إيصال غير صالحة أو غير واضحة. يرجى رفع إيصال حقيقي.';
+const IMAGE_MIME_TYPE_PREFIX = 'image/';
+
+const cleanupUploadedFile = async (filePath) => {
+    if (!filePath) return;
+    try {
+        await fs.promises.unlink(filePath);
+    } catch (_) {
+        // Ignore cleanup failures so validation errors remain primary.
+    }
+};
+
+const validateReceiptUpload = async (file) => {
+    if (!file) return;
+
+    const mimeType = String(file.mimetype || '').toLowerCase();
+    const shouldAnalyzeImage = mimeType.startsWith(IMAGE_MIME_TYPE_PREFIX);
+
+    // Keep existing PDF receipt support untouched; anti-fraud checks currently apply to images only.
+    if (!shouldAnalyzeImage) {
+        return;
+    }
+
+    let imageBuffer;
+    const memoryBuffer = Buffer.isBuffer(file.buffer) ? file.buffer : null;
+    const filePath = String(file.path || '').trim();
+
+    if (memoryBuffer) {
+        imageBuffer = memoryBuffer;
+    } else {
+        if (!filePath) {
+            throw new AppError(INVALID_RECEIPT_MESSAGE, 400, 'INVALID_RECEIPT_IMAGE');
+        }
+
+        try {
+            imageBuffer = await fs.promises.readFile(filePath);
+        } catch (_) {
+            await cleanupUploadedFile(filePath);
+            throw new AppError(INVALID_RECEIPT_MESSAGE, 400, 'INVALID_RECEIPT_IMAGE');
+        }
+    }
+
+    let analysisResult;
+    try {
+        analysisResult = await analyzeReceiptBuffer(imageBuffer, {
+            mimeType: file.mimetype,
+            originalName: file.originalname,
+        });
+    } catch (_) {
+        await cleanupUploadedFile(filePath);
+        throw new AppError(INVALID_RECEIPT_MESSAGE, 400, 'INVALID_RECEIPT_IMAGE');
+    }
+
+    if (!analysisResult.isValid) {
+        await cleanupUploadedFile(filePath);
+        throw new AppError(INVALID_RECEIPT_MESSAGE, 400, 'INVALID_RECEIPT_IMAGE');
+    }
+};
+
+const analyzeReceiptUpload = catchAsync(async (req, _res, next) => {
+    if (!req.file) return next();
+    await validateReceiptUpload(req.file);
+    req.receiptAnalysisValidated = true;
+    next();
+});
 
 /**
  * POST /api/deposits
@@ -20,6 +88,10 @@ const createDeposit = catchAsync(async (req, res) => {
             'Receipt image is required. Please upload a file.',
             'RECEIPT_REQUIRED'
         );
+    }
+
+    if (!req.receiptAnalysisValidated) {
+        await validateReceiptUpload(req.file);
     }
 
     const { requestedAmount, currency, paymentMethodId, notes } = req.body;
@@ -93,6 +165,7 @@ const approveDeposit = catchAsync(async (req, res) => {
     const deposit = await depositService.approveDeposit(
         id,
         req.user._id,
+        {},
         req.auditContext
     );
 
@@ -131,6 +204,7 @@ const reviewDeposit = catchAsync(async (req, res) => {
         deposit = await depositService.approveDeposit(
             id,
             req.user._id,
+            {},
             req.auditContext
         );
         sendSuccess(res, deposit, 'Deposit approved and wallet credited successfully.');
@@ -150,4 +224,4 @@ const reviewDeposit = catchAsync(async (req, res) => {
     }
 });
 
-module.exports = { createDeposit, listDeposits, approveDeposit, rejectDeposit, reviewDeposit };
+module.exports = { analyzeReceiptUpload, createDeposit, listDeposits, approveDeposit, rejectDeposit, reviewDeposit };

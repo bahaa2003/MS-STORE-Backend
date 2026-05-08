@@ -76,7 +76,7 @@ router.get('/provider-products/:providerId', requirePermission('MANAGE_PRODUCTS'
 
 router.use('/products', requirePermission('MANAGE_PRODUCTS'));
 router.get('/products', requirePermission('MANAGE_PRODUCTS'), listProducts);
-router.post('/products', createProduct);                   // ← manual product creation
+router.post('/products', requirePermission('MANAGE_PRODUCTS'), createProduct);                   // ← manual product creation
 router.post('/products/from-provider', requirePermission('MANAGE_PRODUCTS'), createProductFromProvider);
 router.patch('/products/:id/toggle', requirePermission('MANAGE_PRODUCTS'), toggleProduct);
 router.delete('/products/:id', requirePermission('MANAGE_PRODUCTS'), deleteProduct);

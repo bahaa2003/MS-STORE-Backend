@@ -99,6 +99,25 @@ describe('Order within wallet balance', () => {
     });
 });
 
+describe('Manual product costPrice profit', () => {
+    it('uses product.costPrice as the unit cost basis for manual products', async () => {
+        const customer = await createCustomer({ groupId: defaultGroup._id, walletBalance: 1000 });
+        const product = await createProduct({
+            basePrice: 100,
+            costPrice: 70,
+            minQty: 1,
+            maxQty: 10,
+            executionType: 'manual',
+        });
+
+        const { order } = await placeOrder({ userId: customer._id, productId: product._id, quantity: 2 });
+
+        expect(Number(order.basePriceSnapshot)).toBe(100);
+        expect(Number(order.finalPriceCharged)).toBe(100);
+        expect(Number(order.profitUsd)).toBeCloseTo(60, 6);
+    });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. WALLET BALANCE VIRTUAL FIELD
 // ─────────────────────────────────────────────────────────────────────────────

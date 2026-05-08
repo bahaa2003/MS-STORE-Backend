@@ -19,6 +19,7 @@ const {
     ORDER_ACTIONS,
     WALLET_ACTIONS,
     PROVIDER_ACTIONS,
+    ADMIN_ACTIONS,
     ENTITY_TYPES,
     ACTOR_ROLES,
 } = require('../audit/audit.constants');
@@ -61,6 +62,207 @@ const endSessionQuietly = (session) => {
     } catch (_) {
         // already ended
     }
+};
+
+const DYNAMIC_INPUT_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const normalizeCustomInputsPayload = (customInputs) => {
+    if (!customInputs) return {};
+
+    if (Array.isArray(customInputs)) {
+        return customInputs.reduce((acc, item) => {
+            if (!item || typeof item !== 'object') return acc;
+
+            const fieldKey = String(
+                item.key ?? item.name ?? item.label ?? item.field ?? item.id ?? ''
+            ).trim();
+            if (!fieldKey) return acc;
+
+            const hasValue = Object.prototype.hasOwnProperty.call(item, 'value');
+            const resolvedValue = hasValue
+                ? item.value
+                : (item.input ?? item.answer ?? item.data);
+
+            if (resolvedValue !== undefined) {
+                acc[fieldKey] = resolvedValue;
+            }
+
+            return acc;
+        }, {});
+    }
+
+    if (typeof customInputs === 'object') {
+        return { ...customInputs };
+    }
+
+    return {};
+};
+
+const normalizeOrderInputPayload = (orderFieldsValues, customInputs) => {
+    const normalizedOrderFields = (
+        orderFieldsValues
+        && typeof orderFieldsValues === 'object'
+        && !Array.isArray(orderFieldsValues)
+    )
+        ? orderFieldsValues
+        : {};
+
+    return {
+        ...normalizedOrderFields,
+        ...normalizeCustomInputsPayload(customInputs),
+    };
+};
+
+const validateDynamicFieldsInput = (dynamicFields = [], submittedValues = {}) => {
+    const normalizedSubmitted = (
+        submittedValues
+        && typeof submittedValues === 'object'
+        && !Array.isArray(submittedValues)
+    )
+        ? submittedValues
+        : {};
+
+    const aliasMap = new Map();
+    const activeFields = (Array.isArray(dynamicFields) ? dynamicFields : []).filter(Boolean);
+    const errors = [];
+
+    for (const field of activeFields) {
+        const canonicalKey = String(field.name || field.label || '').trim();
+        if (!canonicalKey) continue;
+
+        const aliases = [field.name, field.label]
+            .map((alias) => String(alias || '').trim().toLowerCase())
+            .filter(Boolean);
+
+        for (const alias of aliases) {
+            if (!aliasMap.has(alias)) {
+                aliasMap.set(alias, { field, canonicalKey });
+            }
+        }
+    }
+
+    const mappedValues = {};
+    const unknownKeys = [];
+
+    for (const [submittedKey, rawValue] of Object.entries(normalizedSubmitted)) {
+        const normalizedKey = String(submittedKey || '').trim().toLowerCase();
+        const matched = aliasMap.get(normalizedKey);
+        if (!matched) {
+            unknownKeys.push(submittedKey);
+            continue;
+        }
+
+        mappedValues[matched.canonicalKey] = rawValue;
+    }
+
+    if (unknownKeys.length > 0) {
+        throw new BusinessRuleError(
+            `Unknown custom input field(s): ${unknownKeys.map((key) => `'${key}'`).join(', ')}.`,
+            'INVALID_ORDER_FIELDS'
+        );
+    }
+
+    for (const field of activeFields) {
+        const canonicalKey = String(field.name || field.label || '').trim();
+        if (!canonicalKey) continue;
+
+        const rawValue = mappedValues[canonicalKey];
+        const isMissing = rawValue === undefined || rawValue === null || rawValue === '';
+        const isRequired = field.required !== false;
+
+        if (isRequired && isMissing) {
+            errors.push(`'${field.label || canonicalKey}' is required.`);
+            continue;
+        }
+
+        if (isMissing) continue;
+
+        const fieldType = String(field.type || 'text').toLowerCase();
+        if (fieldType === 'number') {
+            const numericValue = typeof rawValue === 'number' ? rawValue : Number(rawValue);
+            if (!Number.isFinite(numericValue)) {
+                errors.push(`'${field.label || canonicalKey}' must be a valid number.`);
+                continue;
+            }
+            mappedValues[canonicalKey] = numericValue;
+            continue;
+        }
+
+        if (fieldType === 'email') {
+            const emailValue = String(rawValue || '').trim();
+            if (!emailValue || !DYNAMIC_INPUT_EMAIL_REGEX.test(emailValue)) {
+                errors.push(`'${field.label || canonicalKey}' must be a valid email.`);
+                continue;
+            }
+            mappedValues[canonicalKey] = emailValue;
+            continue;
+        }
+
+        const textValue = String(rawValue || '').trim();
+        if (!textValue) {
+            errors.push(`'${field.label || canonicalKey}' must be a non-empty value.`);
+            continue;
+        }
+        mappedValues[canonicalKey] = textValue;
+    }
+
+    if (errors.length > 0) {
+        throw new BusinessRuleError(
+            `Order field validation failed: ${errors.join(' ')}`,
+            'INVALID_ORDER_FIELDS'
+        );
+    }
+
+    const fieldsSnapshot = activeFields
+        .map((field) => {
+            const name = String(field.name || '').trim();
+            const label = String(field.label || '').trim();
+            if (!name || !label) return null;
+            return {
+                name,
+                label,
+                type: String(field.type || 'text').toLowerCase(),
+                required: field.required !== false,
+            };
+        })
+        .filter(Boolean);
+
+    return { values: mappedValues, fieldsSnapshot };
+};
+
+const remapOrderFieldsInputByAliases = (orderFields = [], submittedValues = {}) => {
+    const normalizedSubmitted = (
+        submittedValues
+        && typeof submittedValues === 'object'
+        && !Array.isArray(submittedValues)
+    )
+        ? submittedValues
+        : {};
+
+    const aliasToKey = new Map();
+    for (const field of (Array.isArray(orderFields) ? orderFields : [])) {
+        const canonicalKey = String(field?.key || '').trim();
+        if (!canonicalKey) continue;
+
+        const aliases = [field?.key, field?.label, field?.id]
+            .map((alias) => String(alias || '').trim().toLowerCase())
+            .filter(Boolean);
+
+        for (const alias of aliases) {
+            if (!aliasToKey.has(alias)) {
+                aliasToKey.set(alias, canonicalKey);
+            }
+        }
+    }
+
+    const remapped = {};
+    for (const [submittedKey, rawValue] of Object.entries(normalizedSubmitted)) {
+        const normalizedKey = String(submittedKey || '').trim().toLowerCase();
+        const canonicalKey = aliasToKey.get(normalizedKey) || submittedKey;
+        remapped[canonicalKey] = rawValue;
+    }
+
+    return remapped;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -129,6 +331,7 @@ const _autoUpdateProductPrice = (productId, newProviderPrice, markupType, markup
  * @param {string|null} params.idempotencyKey
  * @param {Object|null} params.auditContext
  * @param {Object|null} params.orderFieldsValues  - dynamic field values submitted by customer
+ * @param {Object|Array|null} params.customInputs - frontend custom inputs payload (object or array)
  * @param {Object|null} params.provider           - adapter instance (injected for testability)
  */
 const createOrder = async ({
@@ -137,9 +340,12 @@ const createOrder = async ({
     quantity,
     idempotencyKey = null,
     auditContext = null,
-    orderFieldsValues = null,   // ← new param
+    orderFieldsValues = null,
+    customInputs = null,
     provider = null,   // ← injected; null = auto-resolve from factory
 }) => {
+    const normalizedOrderInput = normalizeOrderInputPayload(orderFieldsValues, customInputs);
+
     // ── Pre-transaction: Idempotency Check ───────────────────────────────────
     if (idempotencyKey) {
         const existing = await Order.findOne({ userId, idempotencyKey })
@@ -199,7 +405,16 @@ const createOrder = async ({
         }
     }
 
-    return _attemptCreateOrder({ userId, productId, quantity, idempotencyKey, auditContext, orderFieldsValues, provider: resolvedProvider, providerCode });
+    return _attemptCreateOrder({
+        userId,
+        productId,
+        quantity,
+        idempotencyKey,
+        auditContext,
+        orderFieldsValues: normalizedOrderInput,
+        provider: resolvedProvider,
+        providerCode,
+    });
 
 };
 
@@ -252,17 +467,36 @@ const _attemptCreateOrder = async (
         // Runs BEFORE any financial mutation so a bad field value costs nothing.
         //
         // If the product defines formal orderFields, validate against them.
+        // Else if dynamicFields are defined, validate against the lightweight
+        // dynamic schema.
         // Otherwise, pass through raw values so that link/target/etc. still
         // reach the provider (critical for SMM-panel services).
         let customerInput = null;
+        const hasSubmittedValues = (
+            orderFieldsValues
+            && typeof orderFieldsValues === 'object'
+            && !Array.isArray(orderFieldsValues)
+            && Object.keys(orderFieldsValues).length > 0
+        );
+
         if (product.orderFields && product.orderFields.length > 0) {
-            // validateOrderFields throws BusinessRuleError on invalid input
-            const { values, fieldsSnapshot } = validateOrderFields(
+            const normalizedFieldValues = remapOrderFieldsInputByAliases(
                 product.orderFields,
                 orderFieldsValues
             );
+            // validateOrderFields throws BusinessRuleError on invalid input
+            const { values, fieldsSnapshot } = validateOrderFields(
+                product.orderFields,
+                normalizedFieldValues
+            );
             customerInput = { values, fieldsSnapshot };
-        } else if (orderFieldsValues && typeof orderFieldsValues === 'object' && Object.keys(orderFieldsValues).length > 0) {
+        } else if (product.dynamicFields && product.dynamicFields.length > 0) {
+            const { values, fieldsSnapshot } = validateDynamicFieldsInput(
+                product.dynamicFields,
+                orderFieldsValues
+            );
+            customerInput = { values, fieldsSnapshot };
+        } else if (hasSubmittedValues) {
             // No formal schema — save raw values so the fulfillment engine
             // can forward them to the provider (e.g. { link: '...' }).
             customerInput = { values: orderFieldsValues, fieldsSnapshot: [] };
@@ -324,8 +558,17 @@ const _attemptCreateOrder = async (
         const usdTotalPrice = multiply(pricing.finalPrice, String(qty));
 
         // ── 3a. Profit Calculation (USD) ────────────────────────────────────────
-        // Profit = markup portion only = (markedUpPrice - basePrice) × quantity
-        const profitUsd = multiply(subtract(pricing.finalPrice, pricing.basePrice), String(qty));
+        // Manual products can define costPrice explicitly. For provider-linked
+        // products, keep using pricing.basePrice as the cost basis.
+        const numericCostPrice = Number(product.costPrice);
+        const effectiveUnitCost = (
+            !product.provider
+            && Number.isFinite(numericCostPrice)
+            && numericCostPrice > 0
+        )
+            ? String(numericCostPrice)
+            : pricing.basePrice;
+        const profitUsd = multiply(subtract(pricing.finalPrice, effectiveUnitCost), String(qty));
 
         // ── 3b. Currency Conversion ────────────────────────────────────────────
         // Fetch the user's preferred currency (within the session for consistency).
@@ -385,6 +628,7 @@ const _attemptCreateOrder = async (
             status: initialStatus,
             executionType: product.executionType,
             customerInput,
+            customInputs: customerInput?.values ?? null,
             // ── Provider code snapshot (immutable — cron uses this, not product.provider) ──
             providerCode: providerCode ?? null,
             // ── Currency snapshot ────────────────────────────────────────────
@@ -563,15 +807,22 @@ const _attemptCreateOrder = async (
  *   Guard 2 — timestamp check: order.refundedAt !== null  → already refunded
  */
 const markOrderAsFailed = async (orderId, auditContext = null) => {
-    const session = await mongoose.startSession();
-
+    let session = null;
     try {
+        session = await mongoose.startSession();
         session.startTransaction({
             readConcern: { level: 'snapshot' },
             writeConcern: { w: 'majority' },
         });
+    } catch (_sessionErr) {
+        // Standalone MongoDB — transactions unavailable, proceed without session.
+        session = null;
+    }
 
-        const order = await Order.findById(orderId).session(session);
+    try {
+        const order = session
+            ? await Order.findById(orderId).session(session)
+            : await Order.findById(orderId);
         if (!order) throw new NotFoundError('Order');
 
         if (order.status === ORDER_STATUS.FAILED) {
@@ -617,7 +868,7 @@ const markOrderAsFailed = async (orderId, auditContext = null) => {
         order.failedAt = new Date();
         order.refundedAt = new Date();
         order.refunded = true;
-        await order.save({ session });
+        await order.save(session ? { session } : {});
 
         // ── Credit the wallet with the exact original amounts ────────────────
         await refundWalletAtomic({
@@ -626,10 +877,12 @@ const markOrderAsFailed = async (orderId, auditContext = null) => {
             creditUsedAmount: refundCredit,
             reference: order._id,
             description: `Refund for failed order #${order.orderNumber || order._id} (${totalRefund} ${order.currency || 'USD'})`,
-            session,
+            session: session || undefined,
         });
 
-        await session.commitTransaction();
+        if (session) {
+            await session.commitTransaction();
+        }
 
         // ── Audit — AFTER commit ─────────────────────────────────────────────
         const actorId = auditContext?.actorId ?? order.userId;
@@ -673,12 +926,12 @@ const markOrderAsFailed = async (orderId, auditContext = null) => {
 
         return order;
     } catch (err) {
-        if (session.inTransaction()) {
+        if (session?.inTransaction?.()) {
             await session.abortTransaction();
         }
         throw err;
     } finally {
-        try { session.endSession(); } catch (_) { /* already ended */ }
+        try { session?.endSession?.(); } catch (_) { /* already ended */ }
     }
 };
 
@@ -706,15 +959,22 @@ const markOrderAsFailed = async (orderId, auditContext = null) => {
  * @returns {Promise<Order>}
  */
 const processOrderRefund = async (orderId, remains = 0, auditContext = null) => {
-    const session = await mongoose.startSession();
-
+    let session = null;
     try {
+        session = await mongoose.startSession();
         session.startTransaction({
             readConcern: { level: 'snapshot' },
             writeConcern: { w: 'majority' },
         });
+    } catch (_sessionErr) {
+        // Standalone MongoDB — transactions unavailable, proceed without session.
+        session = null;
+    }
 
-        const order = await Order.findById(orderId).session(session);
+    try {
+        const order = session
+            ? await Order.findById(orderId).session(session)
+            : await Order.findById(orderId);
         if (!order) throw new NotFoundError('Order');
 
         // ── Idempotency guard ────────────────────────────────────────────────
@@ -759,7 +1019,7 @@ const processOrderRefund = async (orderId, remains = 0, auditContext = null) => 
         if (isPartial) {
             order.remains = remainsCount;
         }
-        await order.save({ session });
+        await order.save(session ? { session } : {});
 
         // ── Atomic wallet refund ─────────────────────────────────────────────
         const description = isPartial
@@ -772,10 +1032,12 @@ const processOrderRefund = async (orderId, remains = 0, auditContext = null) => 
             creditUsedAmount: 0,
             reference: order._id,
             description,
-            session,
+            session: session || undefined,
         });
 
-        await session.commitTransaction();
+        if (session) {
+            await session.commitTransaction();
+        }
 
         // ── Audit — AFTER commit (fire-and-forget) ──────────────────────────
         const actorId = auditContext?.actorId ?? order.userId;
@@ -821,12 +1083,12 @@ const processOrderRefund = async (orderId, remains = 0, auditContext = null) => 
         return order;
 
     } catch (err) {
-        if (session.inTransaction()) {
+        if (session?.inTransaction?.()) {
             await session.abortTransaction();
         }
         throw err;
     } finally {
-        try { session.endSession(); } catch (_) { /* already ended */ }
+        try { session?.endSession?.(); } catch (_) { /* already ended */ }
     }
 };
 
@@ -834,7 +1096,7 @@ const processOrderRefund = async (orderId, remains = 0, auditContext = null) => 
 // MARK ORDER AS COMPLETED
 // ─────────────────────────────────────────────────────────────────────────────
 
-const markOrderAsCompleted = async (orderId) => {
+const markOrderAsCompleted = async (orderId, auditContext = null) => {
     const order = await Order.findById(orderId);
     if (!order) throw new NotFoundError('Order');
 
@@ -847,6 +1109,25 @@ const markOrderAsCompleted = async (orderId) => {
 
     order.status = ORDER_STATUS.COMPLETED;
     await order.save();
+
+    const actorId = auditContext?.actorId ?? order.userId;
+    const actorRole = auditContext?.actorRole ?? ACTOR_ROLES.ADMIN;
+    const ipAddress = auditContext?.ipAddress ?? null;
+    const userAgent = auditContext?.userAgent ?? null;
+
+    createAuditLog({
+        actorId, actorRole, ipAddress, userAgent,
+        action: ADMIN_ACTIONS.ORDER_COMPLETED,
+        entityType: ENTITY_TYPES.ORDER,
+        entityId: order._id,
+        metadata: {
+            userId: order.userId,
+            orderNumber: order.orderNumber,
+            previousStatus: ORDER_STATUS.PENDING,
+            newStatus: ORDER_STATUS.COMPLETED,
+            executionType: order.executionType,
+        },
+    });
 
     // Notification: fire-and-forget
     notifyOrderCompleted(order);

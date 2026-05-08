@@ -34,6 +34,7 @@ router.post(
     '/',
     requireActiveUser,
     depositUpload.single('receipt'),
+    depositController.analyzeReceiptUpload,
     createDepositValidation, validate,
     depositController.createDeposit
 );

@@ -20,13 +20,14 @@
  *  GET  /api/me/orders                 My orders (status, date, page, limit)
  *  GET  /api/me/orders/:id             My order detail (ownership enforced)
  *
- *  POST /api/me/deposits               Submit deposit request (multipart: screenshotProof)
+ *  POST /api/me/deposits               Submit deposit request (multipart: receipt)
  *  GET  /api/me/deposits               My deposit history
  *  GET  /api/me/deposits/:id           My deposit detail (ownership enforced)
  */
 
 const { Router } = require('express');
 const me = require('./me.controller');
+const depositController = require('../deposits/deposit.controller');
 const authenticate = require('../../shared/middlewares/authenticate');
 const requireActiveUser = require('../../shared/middlewares/requireActiveUser');
 const { createUpload } = require('../../shared/middlewares/upload');
@@ -123,6 +124,7 @@ const createDepositValidation = [
 router.post(
     '/deposits',
     depositUpload.single('receipt'),
+    depositController.analyzeReceiptUpload,
     createDepositValidation,
     validate,
     me.createDeposit

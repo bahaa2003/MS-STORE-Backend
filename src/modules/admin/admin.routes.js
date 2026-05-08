@@ -169,7 +169,7 @@ router.get('/providers/:providerId/products/:externalProductId/price', requirePe
 router.patch('/providers/:id/toggle', requirePermission('MANAGE_SUPPLIERS'), providersCtrl.toggleProvider);
 router.get('/providers/:id', requirePermission('MANAGE_SUPPLIERS'), providersCtrl.getProviderById);
 router.patch('/providers/:id', requirePermission('MANAGE_SUPPLIERS'), validateBody(schemas.updateProvider), providersCtrl.updateProvider);
-router.delete('/providers/:id', requirePermission('MANAGE_SUPPLIERS'), providersCtrl.deleteProvider);
+router.delete('/providers/:id', adminOnly, requirePermission('MANAGE_SUPPLIERS'), providersCtrl.deleteProvider);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ORDERS
@@ -187,12 +187,12 @@ router.get('/orders/:id', requirePermission('MANAGE_ORDERS'), ordersCtrl.getOrde
 // WALLETS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-router.get('/wallets', walletCtrl.listWallets);
-router.get('/wallets/:userId/transactions', walletCtrl.getTransactionHistory);
+router.get('/wallets', requirePermission('MANAGE_WALLET'), walletCtrl.listWallets);
+router.get('/wallets/:userId/transactions', requirePermission('MANAGE_WALLET'), walletCtrl.getTransactionHistory);
 router.post('/wallets/:userId/add', requirePermission('MANAGE_WALLET'), walletLimiter, validateBody(schemas.walletAdjustment), walletCtrl.addFunds);
 router.post('/wallets/:userId/deduct', requirePermission('MANAGE_WALLET'), walletLimiter, validateBody(schemas.walletAdjustment), walletCtrl.deductFunds);
 router.put('/wallets/:userId/set', requirePermission('MANAGE_WALLET'), walletLimiter, validateBody(schemas.walletSetBalance), walletCtrl.setBalance);
-router.get('/wallets/:userId', walletCtrl.getWallet);
+router.get('/wallets/:userId', requirePermission('MANAGE_WALLET'), walletCtrl.getWallet);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CATEGORIES  (Phase 4b gap-bridged module)
@@ -357,7 +357,11 @@ router.patch('/deposits/:id/review', requirePermission('MANAGE_DEPOSITS'), valid
 
     let deposit;
     if (status === 'APPROVED') {
-        deposit = await depositSvc.approveDeposit(id, req.user._id, auditCtx);
+        deposit = await depositSvc.approveDeposit(id, req.user._id, {
+            amount: req.body.amount,
+            currency: req.body.currency,
+            adminNotes,
+        }, auditCtx);
         sendSuccess(res, deposit, 'Deposit approved and wallet credited.');
     } else {
         deposit = await depositSvc.rejectDeposit(id, req.user._id, adminNotes || null, auditCtx);
@@ -376,7 +380,7 @@ router.patch('/deposits/:id', requirePermission('MANAGE_DEPOSITS'), validateBody
 
 router.get('/audit', adminOnly, catchAsync(async (req, res) => {
     const { entityType, entityId, page, limit } = req.query;
-    const result = await getEntityAuditLogs(entityId, entityType, {
+    const result = await getEntityAuditLogs(entityType, entityId, {
         page: parseInt(page ?? 1, 10),
         limit: parseInt(limit ?? 50, 10),
     });
@@ -458,20 +462,34 @@ router.get('/targets', requirePermission('MANAGE_TARGETS'), targetValidation.val
 }));
 
 router.patch('/targets/:id/approve', requirePermission('CONFIRM_TARGET_REQUESTS'), catchAsync(async (req, res) => {
+    const auditContext = req.auditContext ?? {
+        actorId: req.user._id,
+        actorRole: String(req.user.role || '').toUpperCase(),
+        ipAddress: req.ip ?? null,
+        userAgent: req.get('User-Agent') ?? null,
+    };
+
     const order = await targetSvc.approveTargetOrder(
         req.params.id,
         req.user._id,
-        { actorId: req.user._id, actorRole: 'ADMIN', ipAddress: req.ip, userAgent: req.get('User-Agent') }
+        auditContext
     );
     sendSuccess(res, order, 'Target order approved.');
 }));
 
 router.patch('/targets/:id/reject', requirePermission('CONFIRM_TARGET_REQUESTS'), targetValidation.validateBody(targetValidation.schemas.rejectTargetOrder), catchAsync(async (req, res) => {
+    const auditContext = req.auditContext ?? {
+        actorId: req.user._id,
+        actorRole: String(req.user.role || '').toUpperCase(),
+        ipAddress: req.ip ?? null,
+        userAgent: req.get('User-Agent') ?? null,
+    };
+
     const order = await targetSvc.rejectTargetOrder(
         req.params.id,
         req.user._id,
         req.body.adminNotes ?? null,
-        { actorId: req.user._id, actorRole: 'ADMIN', ipAddress: req.ip, userAgent: req.get('User-Agent') }
+        auditContext
     );
     sendSuccess(res, order, 'Target order rejected.');
 }));

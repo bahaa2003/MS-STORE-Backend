@@ -8,6 +8,7 @@
  */
 
 const { Provider } = require('../providers/provider.model');
+const providerDomainService = require('../providers/provider.service');
 const { getProviderAdapter } = require('../providers/adapters/adapter.factory');
 const { NotFoundError, BusinessRuleError } = require('../../shared/errors/AppError');
 const { createAuditLog } = require('../audit/audit.service');
@@ -77,16 +78,10 @@ const updateProvider = async (id, data, adminId) => {
     return provider;
 };
 
-// ─── Soft Delete ──────────────────────────────────────────────────────────────
+// ─── Safe Delete ──────────────────────────────────────────────────────────────
 
 const deleteProvider = async (id, adminId) => {
-    const provider = await Provider.findById(id);
-    if (!provider) throw new NotFoundError('Provider');
-    if (provider.deletedAt) throw new BusinessRuleError('Provider is already deleted.', 'ALREADY_DELETED');
-
-    provider.isActive = false;
-    provider.deletedAt = new Date();
-    await provider.save();
+    const { provider, detachedProducts } = await providerDomainService.deleteProvider(id);
 
     createAuditLog({
         actorId: adminId,
@@ -94,10 +89,10 @@ const deleteProvider = async (id, adminId) => {
         action: ADMIN_ACTIONS.PROVIDER_DELETED,
         entityType: ENTITY_TYPES.PROVIDER,
         entityId: provider._id,
-        metadata: { name: provider.name },
+        metadata: { name: provider.name, detachedProducts },
     });
 
-    return provider;
+    return { ...provider.toObject(), detachedProducts };
 };
 
 // ─── Toggle Active ────────────────────────────────────────────────────────────

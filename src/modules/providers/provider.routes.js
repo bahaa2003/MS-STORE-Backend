@@ -62,6 +62,17 @@ router.patch(
     controller.updateProvider
 );
 
+/**
+ * @route  DELETE /api/providers/:id
+ * @desc   Safely delete provider after detaching linked products
+ */
+router.delete(
+    '/:id',
+    authorize('ADMIN'),
+    providerIdParamValidation, validate,
+    controller.deleteProvider
+);
+
 // =============================================================================
 // SYNC  (Layer 1 → 2)
 // =============================================================================

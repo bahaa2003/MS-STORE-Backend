@@ -295,8 +295,8 @@ const getProduct = catchAsync(async (req, res) => {
 
 /**
  * Create a new deposit request.
- * Accepts multipart/form-data with a `screenshotProof` file (via upload middleware).
- * The uploaded file path is stored as `transferImageUrl`.
+ * Accepts multipart/form-data with a `receipt` file (via upload middleware).
+ * The uploaded file path is stored as `receiptImage`.
  */
 const createDeposit = catchAsync(async (req, res) => {
     // ── Validate file upload ─────────────────────────────────────────────

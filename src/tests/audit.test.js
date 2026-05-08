@@ -45,7 +45,15 @@
 const mongoose = require('mongoose');
 const { AuditLog, IMMUTABILITY_ERROR } = require('../modules/audit/audit.model');
 const { createAuditLog, getEntityAuditLogs, getActorAuditLogs, _sanitize } = require('../modules/audit/audit.service');
-const { USER_ACTIONS, ORDER_ACTIONS, WALLET_ACTIONS, ENTITY_TYPES, ACTOR_ROLES, ALL_ACTIONS } = require('../modules/audit/audit.constants');
+const {
+    USER_ACTIONS,
+    ORDER_ACTIONS,
+    WALLET_ACTIONS,
+    ADMIN_ACTIONS,
+    ENTITY_TYPES,
+    ACTOR_ROLES,
+    ALL_ACTIONS,
+} = require('../modules/audit/audit.constants');
 const userService = require('../modules/users/user.service');
 const orderService = require('../modules/orders/order.service');
 const { register, login } = require('../modules/auth/auth.service');
@@ -434,6 +442,39 @@ describe('[5] Integration – Order refund', () => {
 
         expect(creditLog).not.toBeNull();
         expect(creditLog.entityId.toString()).toBe(customer._id.toString());
+    });
+});
+
+describe('[5b] Integration – Manual order review', () => {
+    it('markOrderAsCompleted writes ADMIN_ORDER_COMPLETED with supervisor actor context', async () => {
+        const group = await createGroup({ name: 'ManualFlow', percentage: 0 });
+        const customer = await createCustomer({ groupId: group._id, walletBalance: 500 });
+        const supervisor = await createAdmin({ role: ACTOR_ROLES.SUPERVISOR });
+        const product = await createProduct({ basePrice: 100, executionType: 'manual' });
+
+        const { order } = await orderService.createOrder({
+            userId: customer._id,
+            productId: product._id,
+            quantity: 1,
+        });
+
+        await AuditLog.collection.deleteMany({});
+
+        await orderService.markOrderAsCompleted(order._id, {
+            actorId: supervisor._id,
+            actorRole: ACTOR_ROLES.SUPERVISOR,
+        });
+        await flushAudit();
+
+        const log = await AuditLog.findOne({
+            action: ADMIN_ACTIONS.ORDER_COMPLETED,
+            entityId: order._id,
+        }).lean();
+
+        expect(log).not.toBeNull();
+        expect(log.actorId.toString()).toBe(supervisor._id.toString());
+        expect(log.actorRole).toBe(ACTOR_ROLES.SUPERVISOR);
+        expect(log.entityType).toBe(ENTITY_TYPES.ORDER);
     });
 });
 

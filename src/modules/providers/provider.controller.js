@@ -45,6 +45,14 @@ const updateProvider = catchAsync(async (req, res) => {
     sendSuccess(res, provider, 'Provider updated.');
 });
 
+/**
+ * DELETE /api/providers/:id
+ */
+const deleteProvider = catchAsync(async (req, res) => {
+    const result = await providerService.deleteProvider(req.params.id);
+    sendSuccess(res, result, 'Provider deleted and linked products detached.');
+});
+
 // =============================================================================
 // LAYER 1 → 2 — SYNC (Populate ProviderProducts from provider API)
 // =============================================================================
@@ -149,6 +157,7 @@ module.exports = {
     listProviders,
     getProvider,
     updateProvider,
+    deleteProvider,
     // Sync
     triggerSync,
     // Layer 2

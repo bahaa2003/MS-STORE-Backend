@@ -333,6 +333,72 @@ describe('[3] Order creation — orderFields integration', () => {
         expect(order.customerInput.values.server).toBe('NA');
     });
 
+    it('accepts customInputs object and remaps order-field labels to internal keys', async () => {
+        const product = await createProduct({ basePrice: 10, minQty: 1, maxQty: 10, orderFields: FIELDS });
+        const { order } = await createOrder({
+            userId: customer._id,
+            productId: product._id,
+            quantity: 1,
+            customInputs: {
+                'Player ID': 'player-555',
+                Server: 'EU',
+            },
+        });
+
+        expect(order.customerInput).not.toBeNull();
+        expect(order.customerInput.values.player_id).toBe('player-555');
+        expect(order.customerInput.values.server).toBe('EU');
+        expect(order.customInputs.player_id).toBe('player-555');
+    });
+
+    it('accepts dynamicFields with customInputs array and stores sanitized values', async () => {
+        const product = await createProduct({
+            basePrice: 10,
+            minQty: 1,
+            maxQty: 10,
+            dynamicFields: [
+                { name: 'Player ID', label: 'Player ID', type: 'text', required: true },
+                { name: 'Server', label: 'Server', type: 'select', required: true },
+            ],
+        });
+        const { order } = await createOrder({
+            userId: customer._id,
+            productId: product._id,
+            quantity: 1,
+            customInputs: [
+                { label: 'Player ID', value: 'hero-123' },
+                { name: 'Server', value: 'MENA' },
+            ],
+        });
+
+        expect(order.customerInput).not.toBeNull();
+        expect(order.customerInput.values['Player ID']).toBe('hero-123');
+        expect(order.customerInput.values.Server).toBe('MENA');
+        expect(order.customInputs['Player ID']).toBe('hero-123');
+        expect(order.customInputs.Server).toBe('MENA');
+    });
+
+    it('rejects customInputs when a required dynamic field is missing', async () => {
+        const product = await createProduct({
+            basePrice: 10,
+            minQty: 1,
+            maxQty: 10,
+            dynamicFields: [
+                { name: 'Player ID', label: 'Player ID', type: 'text', required: true },
+                { name: 'Server', label: 'Server', type: 'text', required: true },
+            ],
+        });
+
+        await expect(
+            createOrder({
+                userId: customer._id,
+                productId: product._id,
+                quantity: 1,
+                customInputs: { 'Player ID': 'only-one-field' },
+            })
+        ).rejects.toMatchObject({ code: 'INVALID_ORDER_FIELDS' });
+    });
+
     it('customerInput.values stores correctly coerced values', async () => {
         const numField = [{
             id: 'f1', label: 'Amount', key: 'amount', type: 'number',
