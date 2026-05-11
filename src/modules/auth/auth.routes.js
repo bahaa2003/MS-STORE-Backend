@@ -12,8 +12,8 @@
  *   GET   /api/auth/google/callback         → Passport OAuth callback
  *
  * 2FA routes:
- *   POST  /api/auth/2fa/generate            → Generate TOTP secret + QR (authenticated)
- *   POST  /api/auth/2fa/enable              → Verify + activate 2FA (authenticated)
+ *   POST  /api/auth/2fa/generate            → Send email OTP before enabling 2FA (authenticated)
+ *   POST  /api/auth/2fa/enable              → Confirm email OTP and activate 2FA (authenticated)
  *   POST  /api/auth/2fa/disable             → Deactivate 2FA (authenticated)
  *   POST  /api/auth/verify-2fa              → Exchange temp token + code for JWT (public)
  */
@@ -138,28 +138,28 @@ router.get('/google/failure', (req, res) => {
 
 /**
  * @route  POST /api/auth/2fa/generate
- * @desc   Generate a TOTP secret and return QR code for authenticator app
+ * @desc   Send email OTP before enabling 2FA
  * @access Private (requires valid JWT)
  */
 router.post('/2fa/generate', authenticate, authController.generate2FA);
 
 /**
  * @route  POST /api/auth/2fa/enable
- * @desc   Verify TOTP token and activate 2FA for the authenticated user
+ * @desc   Confirm email OTP and activate 2FA for the authenticated user
  * @access Private (requires valid JWT)
  */
 router.post('/2fa/enable', authenticate, enable2FAValidation, validate, authController.enable2FA);
 
 /**
  * @route  POST /api/auth/2fa/disable
- * @desc   Deactivate 2FA (requires password or valid TOTP code)
+ * @desc   Deactivate 2FA (requires password)
  * @access Private (requires valid JWT)
  */
 router.post('/2fa/disable', authenticate, disable2FAValidation, validate, authController.disable2FA);
 
 /**
  * @route  POST /api/auth/verify-2fa
- * @desc   Exchange a 2FA temp token + TOTP code for a full auth JWT
+ * @desc   Exchange a 2FA temp token + email OTP code for a full auth JWT
  * @access Public (uses temp token in body, not Bearer header)
  */
 router.post('/verify-2fa', authLimiter, verify2FAValidation, validate, authController.verify2FA);

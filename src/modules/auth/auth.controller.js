@@ -101,36 +101,36 @@ const googleCallback = catchAsync(async (req, res) => {
 
 /**
  * POST /api/auth/2fa/generate
- * Requires authentication. Generates a new TOTP secret + QR code.
+ * Requires authentication. Sends an email OTP before enabling 2FA.
  */
 const generate2FA = catchAsync(async (req, res) => {
     const result = await authService.generate2FASecret(req.user._id);
-    sendSuccess(res, result, '2FA secret generated. Scan the QR code with your authenticator app.');
+    sendSuccess(res, null, result.message);
 });
 
 /**
  * POST /api/auth/2fa/enable
- * Requires authentication. Verifies TOTP token and activates 2FA.
+ * Requires authentication. Confirms email OTP and activates 2FA.
  */
 const enable2FA = catchAsync(async (req, res) => {
-    const result = await authService.enable2FA(req.user._id, req.body.token);
+    const result = await authService.enable2FA(req.user._id, req.body.code);
     sendSuccess(res, null, result.message);
 });
 
 /**
  * POST /api/auth/2fa/disable
- * Requires authentication. Deactivates 2FA (requires password or TOTP code).
+ * Requires authentication. Deactivates 2FA (requires password).
  */
 const disable2FA = catchAsync(async (req, res) => {
-    const { password, code } = req.body;
-    const result = await authService.disable2FA(req.user._id, { password, code });
+    const { password } = req.body;
+    const result = await authService.disable2FA(req.user._id, { password });
     sendSuccess(res, null, result.message);
 });
 
 /**
  * POST /api/auth/verify-2fa
  * Public (uses temp token in body, not Bearer header).
- * Exchanges a 2FA-pending temp token + TOTP code for a full JWT.
+ * Exchanges a 2FA-pending temp token + email OTP code for a full JWT.
  */
 const verify2FA = catchAsync(async (req, res) => {
     const { tempToken, code } = req.body;

@@ -14,7 +14,16 @@
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 const { User, USER_STATUS } = require('../modules/users/user.model');
-const { register, login, verifyEmail, resendVerification } = require('../modules/auth/auth.service');
+const {
+    register,
+    login,
+    verifyEmail,
+    resendVerification,
+    generate2FASecret,
+    enable2FA,
+    verify2FA,
+} = require('../modules/auth/auth.service');
+const emailService = require('../services/email.service');
 const {
     connectTestDB,
     disconnectTestDB,
@@ -336,5 +345,186 @@ describe('[5] Login success', () => {
         expect(typeof result.token).toBe('string');
         expect(result.token.split('.')).toHaveLength(3);   // JWT has 3 parts
         expect(result.user.password).toBeUndefined();
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [6] Email OTP 2FA
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('[6] Email OTP 2FA', () => {
+    const password = 'ThePassword@1';
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    const createVerifiedUserWithPassword = async () => {
+        const group = await createGroup({ name: `TwoFactor-${Date.now()}`, percentage: 0 });
+        const user = await createCustomer({
+            groupId: group._id,
+            status: USER_STATUS.ACTIVE,
+            verified: true,
+        });
+
+        const fresh = await User.findById(user._id);
+        fresh.password = password;
+        await fresh.save();
+
+        return fresh;
+    };
+
+    const requestAndConfirmSetup = async (user) => {
+        const sendSpy = jest
+            .spyOn(emailService, 'sendTwoFactorOtpEmail')
+            .mockResolvedValue();
+
+        await generate2FASecret(user._id);
+        const plainOtp = sendSpy.mock.calls[0][1];
+        await enable2FA(user._id, plainOtp);
+        sendSpy.mockRestore();
+
+        return plainOtp;
+    };
+
+    it('requests a setup email OTP without enabling 2FA immediately', async () => {
+        const user = await createVerifiedUserWithPassword();
+        const sendSpy = jest
+            .spyOn(emailService, 'sendTwoFactorOtpEmail')
+            .mockResolvedValue();
+
+        const before = Date.now();
+        const result = await generate2FASecret(user._id);
+        const after = Date.now();
+
+        expect(result.message).toMatch(/verification code sent/i);
+        expect(sendSpy).toHaveBeenCalledTimes(1);
+
+        const plainOtp = sendSpy.mock.calls[0][1];
+        expect(plainOtp).toMatch(/^\d{6}$/);
+
+        const updated = await User.findById(user._id)
+            .select('+twoFactorOtp +twoFactorOtpExpires');
+        expect(updated.isTwoFactorEnabled).toBe(false);
+        expect(updated.twoFactorOtp).toMatch(/^[a-f0-9]{64}$/);
+        expect(updated.twoFactorOtp).not.toBe(plainOtp);
+        expect(updated.twoFactorOtpExpires.getTime())
+            .toBeGreaterThanOrEqual(before + 5 * 60 * 1000);
+        expect(updated.twoFactorOtpExpires.getTime())
+            .toBeLessThanOrEqual(after + 5 * 60 * 1000);
+    });
+
+    it('confirms setup OTP before enabling 2FA and clears setup OTP fields', async () => {
+        const user = await createVerifiedUserWithPassword();
+        const sendSpy = jest
+            .spyOn(emailService, 'sendTwoFactorOtpEmail')
+            .mockResolvedValue();
+
+        await generate2FASecret(user._id);
+        const plainOtp = sendSpy.mock.calls[0][1];
+
+        const result = await enable2FA(user._id, plainOtp);
+
+        const updated = await User.findById(user._id)
+            .select('+twoFactorOtp +twoFactorOtpExpires');
+        expect(result.message).toMatch(/successfully enabled/i);
+        expect(updated.isTwoFactorEnabled).toBe(true);
+        expect(updated.twoFactorOtp).toBeNull();
+        expect(updated.twoFactorOtpExpires).toBeNull();
+    });
+
+    it('rejects an invalid setup OTP and keeps 2FA disabled', async () => {
+        const user = await createVerifiedUserWithPassword();
+        jest.spyOn(emailService, 'sendTwoFactorOtpEmail').mockResolvedValue();
+
+        await generate2FASecret(user._id);
+
+        await expect(enable2FA(user._id, '000000'))
+            .rejects.toMatchObject({ code: 'AUTHENTICATION_ERROR' });
+
+        const updated = await User.findById(user._id);
+        expect(updated.isTwoFactorEnabled).toBe(false);
+    });
+
+    it('login sends an email OTP, stores only its hash, and returns a temp token', async () => {
+        const user = await createVerifiedUserWithPassword();
+        await requestAndConfirmSetup(user);
+
+        const sendSpy = jest
+            .spyOn(emailService, 'sendTwoFactorOtpEmail')
+            .mockResolvedValue();
+
+        const before = Date.now();
+        const result = await login({ email: user.email, password });
+        const after = Date.now();
+
+        expect(result.requires2FA).toBe(true);
+        expect(result.tempToken).toBeDefined();
+        expect(result.email).toBe(user.email);
+        expect(result.token).toBeUndefined();
+        expect(result.user).toBeUndefined();
+
+        expect(sendSpy).toHaveBeenCalledTimes(1);
+        const plainOtp = sendSpy.mock.calls[0][1];
+        expect(plainOtp).toMatch(/^\d{6}$/);
+
+        const dbUser = await User.findById(user._id)
+            .select('+twoFactorOtp +twoFactorOtpExpires');
+
+        expect(dbUser.twoFactorOtp).toMatch(/^[a-f0-9]{64}$/);
+        expect(dbUser.twoFactorOtp).not.toBe(plainOtp);
+        expect(dbUser.twoFactorOtpExpires.getTime())
+            .toBeGreaterThanOrEqual(before + 5 * 60 * 1000);
+        expect(dbUser.twoFactorOtpExpires.getTime())
+            .toBeLessThanOrEqual(after + 5 * 60 * 1000);
+    });
+
+    it('verify2FA consumes a valid email OTP and returns a full JWT', async () => {
+        const user = await createVerifiedUserWithPassword();
+        await requestAndConfirmSetup(user);
+
+        const sendSpy = jest
+            .spyOn(emailService, 'sendTwoFactorOtpEmail')
+            .mockResolvedValue();
+
+        const challenge = await login({ email: user.email, password });
+        const plainOtp = sendSpy.mock.calls[0][1];
+
+        const result = await verify2FA(challenge.tempToken, plainOtp);
+
+        expect(result.token).toBeDefined();
+        expect(result.token.split('.')).toHaveLength(3);
+        expect(result.user.email).toBe(user.email);
+
+        const dbUser = await User.findById(user._id)
+            .select('+twoFactorOtp +twoFactorOtpExpires');
+
+        expect(dbUser.twoFactorOtp).toBeNull();
+        expect(dbUser.twoFactorOtpExpires).toBeNull();
+    });
+
+    it('verify2FA rejects an expired email OTP and clears it', async () => {
+        const user = await createVerifiedUserWithPassword();
+        await requestAndConfirmSetup(user);
+
+        const sendSpy = jest
+            .spyOn(emailService, 'sendTwoFactorOtpEmail')
+            .mockResolvedValue();
+
+        const challenge = await login({ email: user.email, password });
+        const plainOtp = sendSpy.mock.calls[0][1];
+
+        await User.findByIdAndUpdate(user._id, {
+            twoFactorOtpExpires: new Date(Date.now() - 1000),
+        });
+
+        await expect(verify2FA(challenge.tempToken, plainOtp))
+            .rejects.toMatchObject({ code: 'AUTHENTICATION_ERROR' });
+
+        const dbUser = await User.findById(user._id)
+            .select('+twoFactorOtp +twoFactorOtpExpires');
+
+        expect(dbUser.twoFactorOtp).toBeNull();
+        expect(dbUser.twoFactorOtpExpires).toBeNull();
     });
 });

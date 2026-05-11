@@ -55,23 +55,17 @@ const loginValidation = [
 // ─── 2FA Validation ───────────────────────────────────────────────────────────
 
 const enable2FAValidation = [
-    body('token')
+    body('code')
         .trim()
-        .notEmpty().withMessage('2FA token is required')
-        .isLength({ min: 6, max: 6 }).withMessage('2FA token must be exactly 6 digits')
-        .isNumeric().withMessage('2FA token must contain only digits'),
+        .notEmpty().withMessage('2FA code is required')
+        .isLength({ min: 6, max: 6 }).withMessage('2FA code must be exactly 6 digits')
+        .isNumeric().withMessage('2FA code must contain only digits'),
 ];
 
 const disable2FAValidation = [
     body('password')
         .optional()
         .isString().withMessage('Password must be a string'),
-
-    body('code')
-        .optional()
-        .trim()
-        .isLength({ min: 6, max: 6 }).withMessage('2FA code must be exactly 6 digits')
-        .isNumeric().withMessage('2FA code must contain only digits'),
 ];
 
 const verify2FAValidation = [
