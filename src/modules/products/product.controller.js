@@ -83,8 +83,8 @@ const listProducts = catchAsync(async (req, res) => {
  * GET /api/products/:id
  */
 const getProduct = catchAsync(async (req, res) => {
-    const product = await productService.getProductById(req.params.id);
     const isAdmin = req.user?.role === 'ADMIN';
+    const product = await productService.getProductById(req.params.id, { activeOnly: !isAdmin });
     const responseProduct = isAdmin ? product : sanitizeProductForCustomer(product);
     sendSuccess(res, responseProduct);
 });

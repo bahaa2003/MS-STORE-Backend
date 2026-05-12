@@ -102,6 +102,34 @@ const depositRequestSchema = new mongoose.Schema(
             default: null,
         },
 
+        /** Sender wallet number/address supplied by the customer for manual verification. */
+        senderDetails: {
+            methodType: {
+                type: String,
+                trim: true,
+                maxlength: [64, 'sender method type cannot exceed 64 characters'],
+                default: null,
+            },
+            field: {
+                type: String,
+                trim: true,
+                maxlength: [64, 'sender detail field cannot exceed 64 characters'],
+                default: null,
+            },
+            label: {
+                type: String,
+                trim: true,
+                maxlength: [128, 'sender detail label cannot exceed 128 characters'],
+                default: null,
+            },
+            value: {
+                type: String,
+                trim: true,
+                maxlength: [200, 'sender detail value cannot exceed 200 characters'],
+                default: null,
+            },
+        },
+
         /** Current lifecycle status. */
         status: {
             type: String,

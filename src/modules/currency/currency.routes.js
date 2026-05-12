@@ -23,6 +23,7 @@ const {
     getCurrencyHandler,
     updateRateHandler,
     setStatusHandler,
+    deleteCurrencyHandler,
 } = require('./currency.controller');
 
 const router = Router();
@@ -36,5 +37,6 @@ router.post('/', createCurrencyHandler);
 router.get('/:code', getCurrencyHandler);
 router.patch('/:code/status', setStatusHandler);   // NOTE: /status BEFORE /:code to avoid param conflict
 router.patch('/:code', updateRateHandler);
+router.delete('/:code', deleteCurrencyHandler);
 
 module.exports = router;

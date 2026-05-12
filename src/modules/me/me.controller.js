@@ -207,7 +207,7 @@ const getProducts = catchAsync(async (req, res) => {
     const { usdToLocal } = require('../../shared/utils/currencyMath');
     const { calculateFinalPrice } = require('../orders/pricing.service');
 
-    const filter = { isActive: true };
+    const filter = { isActive: true, deletedAt: null };
     if (req.query.search) {
         filter.$or = [
             { name: { $regex: req.query.search, $options: 'i' } },
@@ -261,7 +261,7 @@ const getProduct = catchAsync(async (req, res) => {
     const { usdToLocal } = require('../../shared/utils/currencyMath');
     const { calculateFinalPrice } = require('../orders/pricing.service');
 
-    const product = await Product.findOne({ _id: req.params.id, isActive: true })
+    const product = await Product.findOne({ _id: req.params.id, isActive: true, deletedAt: null })
         .select('-providerProduct')
         .lean();
 
@@ -309,6 +309,7 @@ const createDeposit = catchAsync(async (req, res) => {
     }
 
     const { requestedAmount, currency, paymentMethodId, notes } = req.body;
+    const senderDetails = depositService.normalizeSenderDetails(req.body);
 
     // ── Fetch current exchange rate ──────────────────────────────────────
     const { Currency } = require('../currency/currency.model');
@@ -344,6 +345,7 @@ const createDeposit = catchAsync(async (req, res) => {
         amountUsd,
         receiptImage,
         notes: notes || null,
+        senderDetails,
         auditContext: {
             actorId: req.user._id,
             actorRole: 'CUSTOMER',

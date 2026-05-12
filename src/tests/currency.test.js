@@ -265,6 +265,27 @@ describe('[5] currency.service admin operations', () => {
             })
         ).rejects.toThrow('already exists');
     });
+
+    it('deleteCurrency deletes an unused currency', async () => {
+        await makeCurrency({ code: 'AED', name: 'UAE Dirham', symbol: 'د.إ' });
+
+        await currencyService.deleteCurrency('AED');
+
+        const deleted = await Currency.findOne({ code: 'AED' });
+        expect(deleted).toBeNull();
+    });
+
+    it('deleteCurrency refuses a currency linked to a user', async () => {
+        await makeCurrency({ code: 'AED', name: 'UAE Dirham', symbol: 'د.إ' });
+        const { customer } = await createCustomerWithGroup();
+        await User.findByIdAndUpdate(customer._id, { currency: 'AED' });
+
+        await expect(currencyService.deleteCurrency('AED'))
+            .rejects.toThrow('Cannot delete currency in use');
+
+        const stillExists = await Currency.findOne({ code: 'AED' });
+        expect(stillExists).not.toBeNull();
+    });
 });
 
 // =============================================================================

@@ -31,6 +31,29 @@ const createDepositValidation = [
         .isString().withMessage('notes must be a string')
         .trim()
         .isLength({ max: 500 }).withMessage('notes cannot exceed 500 characters'),
+
+    body('senderDetails')
+        .optional()
+        .custom((value) => typeof value === 'string' || (value && typeof value === 'object'))
+        .withMessage('senderDetails must be an object or JSON string'),
+
+    body('senderWalletNumber')
+        .optional()
+        .isString().withMessage('senderWalletNumber must be a string')
+        .trim()
+        .isLength({ max: 200 }).withMessage('senderWalletNumber cannot exceed 200 characters'),
+
+    body('senderWalletAddress')
+        .optional()
+        .isString().withMessage('senderWalletAddress must be a string')
+        .trim()
+        .isLength({ max: 200 }).withMessage('senderWalletAddress cannot exceed 200 characters'),
+
+    body('transferredFromNumber')
+        .optional()
+        .isString().withMessage('transferredFromNumber must be a string')
+        .trim()
+        .isLength({ max: 200 }).withMessage('transferredFromNumber cannot exceed 200 characters'),
 ];
 
 /**

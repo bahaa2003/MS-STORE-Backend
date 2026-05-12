@@ -110,10 +110,23 @@ const setStatusHandler = catchAsync(async (req, res) => {
     );
 });
 
+// =============================================================================
+// DELETE /admin/currencies/:code
+// =============================================================================
+
+/**
+ * Delete a currency if it is not linked to any user wallet.
+ */
+const deleteCurrencyHandler = catchAsync(async (req, res) => {
+    const currency = await currencyService.deleteCurrency(req.params.code);
+    sendSuccess(res, currency, `Currency '${currency.code}' deleted.`);
+});
+
 module.exports = {
     listCurrenciesHandler,
     createCurrencyHandler,
     getCurrencyHandler,
     updateRateHandler,
     setStatusHandler,
+    deleteCurrencyHandler,
 };

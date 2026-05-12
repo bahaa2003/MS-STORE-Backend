@@ -66,8 +66,12 @@ const listProducts = async ({ activeOnly = true, page = 1, limit = 50 } = {}) =>
  * getProductById(id)
  * Throws NotFoundError if missing.
  */
-const getProductById = async (id) => {
-    const product = await Product.findById(id)
+const getProductById = async (id, { activeOnly = false } = {}) => {
+    const filter = activeOnly
+        ? { _id: id, isActive: true, deletedAt: null }
+        : { _id: id };
+
+    const product = await Product.findOne(filter)
         .populate('provider', 'name slug baseUrl isActive')
         .populate('providerProduct', 'rawName externalProductId rawPrice lastSyncedAt');
     if (!product) throw new NotFoundError('Product');

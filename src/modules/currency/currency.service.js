@@ -17,6 +17,7 @@
  */
 
 const { Currency } = require('./currency.model');
+const { User } = require('../users/user.model');
 const { invalidateCurrencyCache } = require('../../services/currencyConverter.service');
 const { NotFoundError, BusinessRuleError, ConflictError } = require('../../shared/errors/AppError');
 
@@ -263,6 +264,53 @@ const createCurrency = async ({ code, name, symbol, platformRate, marketRate, ma
     return doc;
 };
 
+// =============================================================================
+// ADMIN: DELETE CURRENCY
+// =============================================================================
+
+/**
+ * Delete a currency when it is not linked to any user wallet.
+ *
+ * Users currently store currency as the ISO code, while some older data may
+ * still contain the currency document id as a string. Check both forms so an
+ * unused currency is not blocked by a malformed existence query.
+ *
+ * @param {string} codeOrId
+ * @returns {Promise<Currency>}
+ */
+const deleteCurrency = async (codeOrId) => {
+    const key = String(codeOrId || '').trim();
+    const upper = key.toUpperCase();
+    const doc = /^[a-f\d]{24}$/i.test(key)
+        ? await Currency.findById(key)
+        : await Currency.findOne({ code: upper });
+
+    if (!doc) throw new NotFoundError(`Currency '${upper}'`);
+
+    if (doc.code === 'USD') {
+        throw new BusinessRuleError(
+            'The USD base currency cannot be deleted.',
+            'CANNOT_DELETE_USD'
+        );
+    }
+
+    const linkedUser = await User.exists({
+        currency: { $in: [doc.code, String(doc._id), doc._id] },
+    });
+
+    if (linkedUser) {
+        throw new BusinessRuleError(
+            'Cannot delete currency in use',
+            'CURRENCY_IN_USE'
+        );
+    }
+
+    await doc.deleteOne();
+    invalidateCurrencyCache(doc.code);
+
+    return doc;
+};
+
 module.exports = {
     seedBaseCurrency,
     listCurrencies,
@@ -270,4 +318,5 @@ module.exports = {
     updateCurrencyRate,
     setCurrencyStatus,
     createCurrency,
+    deleteCurrency,
 };

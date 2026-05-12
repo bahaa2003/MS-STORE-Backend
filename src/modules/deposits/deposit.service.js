@@ -14,6 +14,57 @@ const { createAuditLog } = require('../audit/audit.service');
 const { DEPOSIT_ACTIONS, WALLET_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('../audit/audit.constants');
 const { notifyNewDeposit, notifyDepositApproved, notifyDepositRejected } = require('../notifications/notification.service');
 
+const safeParseJson = (value) => {
+    if (typeof value !== 'string') return null;
+    try {
+        return JSON.parse(value);
+    } catch (_) {
+        return null;
+    }
+};
+
+const normalizeSenderDetails = (source = {}) => {
+    const rawDetails = source.senderDetails && typeof source.senderDetails === 'object'
+        ? source.senderDetails
+        : safeParseJson(source.senderDetails);
+    const details = rawDetails && typeof rawDetails === 'object' ? rawDetails : {};
+    const value = String(
+        details.value
+        || source.senderDetailValue
+        || source.senderWalletAddress
+        || source.senderWalletNumber
+        || source.transferredFromNumber
+        || ''
+    ).trim();
+
+    if (!value) return null;
+
+    const methodType = String(
+        details.methodType
+        || details.type
+        || source.paymentMethodType
+        || ''
+    ).trim().toLowerCase();
+    const field = String(
+        details.field
+        || source.senderDetailField
+        || (source.senderWalletAddress ? 'senderWalletAddress' : 'senderWalletNumber')
+    ).trim();
+    const label = String(
+        details.label
+        || (field === 'senderWalletAddress' || methodType === 'usdt'
+            ? 'عنوان المحفظة المحول منها'
+            : 'رقم المحفظة المحول منها')
+    ).trim();
+
+    return {
+        methodType: methodType.slice(0, 64),
+        field: field.slice(0, 64),
+        label: label.slice(0, 128),
+        value: value.slice(0, 200),
+    };
+};
+
 // =============================================================================
 // CREATE
 // =============================================================================
@@ -39,6 +90,7 @@ const { notifyNewDeposit, notifyDepositApproved, notifyDepositRejected } = requi
  * @param {number}          params.amountUsd
  * @param {string}          params.receiptImage
  * @param {string|null}     [params.notes]
+ * @param {Object|null}     [params.senderDetails]
  * @param {Object|null}     [params.auditContext]
  *
  * @returns {Promise<DepositRequest>}
@@ -52,6 +104,7 @@ const createDepositRequest = async ({
     amountUsd,
     receiptImage,
     notes = null,
+    senderDetails = null,
     auditContext = null,
 }) => {
     // Confirm user exists (belt-and-suspenders — middleware already checks ACTIVE)
@@ -67,6 +120,7 @@ const createDepositRequest = async ({
         amountUsd: Number(parseFloat(amountUsd).toFixed(2)),
         receiptImage,
         notes,
+        senderDetails,
         status: DEPOSIT_STATUS.PENDING,
     });
 
@@ -84,6 +138,7 @@ const createDepositRequest = async ({
             currency,
             exchangeRate,
             amountUsd: deposit.amountUsd,
+            senderDetails,
         },
         ipAddress: auditContext?.ipAddress ?? null,
         userAgent: auditContext?.userAgent ?? null,
@@ -499,4 +554,5 @@ module.exports = {
     listMyDeposits,
     getDepositById,
     updatePendingDeposit,
+    normalizeSenderDetails,
 };
