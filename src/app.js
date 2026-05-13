@@ -23,6 +23,7 @@ const auditRoutes = require('./modules/audit/audit.routes');
 const depositRoutes = require('./modules/deposits/deposit.routes');
 const providerRoutes = require('./modules/providers/provider.routes');
 const adminCatalogRoutes = require('./modules/admin/admin.catalog.routes');
+const adminSettingsService = require('./modules/admin/admin.settings.service');
 const adminRoutes = require('./modules/admin/admin.routes');    // ← dashboard router
 const meRoutes = require('./modules/me/me.routes');          // ← user panel
 const targetRoutes = require('./modules/targets/target.routes'); // ← target coin purchases
@@ -145,28 +146,14 @@ app.get(`${API_PREFIX}/currencies/active`, async (req, res) => {
 // ── Public Payment Settings (no auth required — used by customer deposit pages) ─
 app.get(`${API_PREFIX}/settings/payment`, async (req, res) => {
     try {
-        const { Setting } = require('./modules/admin/setting.model');
-        const keys = ['paymentGroups', 'paymentCountryAccounts', 'paymentInstructions', 'whatsappNumber'];
-        const settings = await Setting.find({ key: { $in: keys } }).lean();
-        const find = (key) => settings.find((s) => s.key === key)?.value;
-
-        const paymentGroups = (find('paymentGroups') || [])
-            .filter((g) => g.isActive !== false)
-            .map((g) => ({
-                ...g,
-                methods: (g.methods || []).filter((m) => m.isActive !== false),
-            }))
-            .filter((g) => g.methods && g.methods.length > 0);
-
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.set('Pragma', 'no-cache');
+        res.set('Expires', '0');
+        const paymentSettings = await adminSettingsService.getPaymentSettings();
         res.json({
             success: true,
             message: 'Payment settings',
-            data: {
-                paymentGroups,
-                countryAccounts: find('paymentCountryAccounts') || [],
-                instructions: find('paymentInstructions') || '',
-                whatsappNumber: find('whatsappNumber') || '',
-            },
+            data: paymentSettings,
         });
     } catch (err) {
         res.status(500).json({ success: false, message: 'Failed to load payment settings' });

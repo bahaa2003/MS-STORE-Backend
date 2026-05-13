@@ -256,6 +256,7 @@ describe('[2] Admin Wallet Service', () => {
 
 describe('[3] Admin Settings Service', () => {
     beforeEach(async () => {
+        adminSettingService.invalidateSettingsCache();
         await seedDefaultSettings();
     });
 
@@ -287,6 +288,32 @@ describe('[3] Admin Settings Service', () => {
         // Verify persisted
         const fresh = await adminSettingService.getSettingByKey('maintenanceMode');
         expect(fresh.value).toBe(true);
+    });
+
+    it('updateSetting invalidates cached payment settings', async () => {
+        const { admin } = await setup();
+        const cached = await adminSettingService.getPaymentSettings();
+        expect(cached.paymentGroups).toEqual([]);
+
+        const paymentGroups = [
+            {
+                id: 'bank-transfer',
+                name: 'Bank Transfer',
+                isActive: true,
+                methods: [
+                    {
+                        id: 'bank-egp',
+                        name: 'EGP Bank',
+                        isActive: true,
+                    },
+                ],
+            },
+        ];
+
+        await adminSettingService.updateSetting('paymentGroups', paymentGroups, admin._id);
+
+        const fresh = await adminSettingService.getPaymentSettings();
+        expect(fresh.paymentGroups).toEqual(paymentGroups);
     });
 
     it('updateSetting throws NOT_FOUND for unknown key', async () => {
