@@ -56,7 +56,7 @@ const listProducts = catchAsync(async (req, res) => {
     const isAdmin = req.user?.role === 'ADMIN';
     const activeOnly = !isAdmin;
     const page = parseInt(req.query.page, 10) || 1;
-    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+    const limit = Math.min(parseInt(req.query.limit, 10) || 500, 500);
 
     const { products, pagination } = await productService.listProducts({ activeOnly, page, limit });
 
