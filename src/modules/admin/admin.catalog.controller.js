@@ -129,11 +129,11 @@ const setTranslatedName = catchAsync(async (req, res) => {
  * Query: ?page= &limit= &search= &category=
  */
 const listProducts = catchAsync(async (req, res) => {
-    const { page = 1, limit = 50 } = req.query;
+    const { page = 1, limit = 500 } = req.query;
     const { products, pagination } = await productService.listProducts({
         activeOnly: false,
         page: parseInt(page, 10),
-        limit: Math.min(parseInt(limit, 10), 200),
+        limit: Math.min(parseInt(limit, 10), 500),
     });
     sendPaginated(res, products, pagination, 'Products retrieved.');
 });
