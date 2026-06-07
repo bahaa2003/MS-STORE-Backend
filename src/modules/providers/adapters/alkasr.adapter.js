@@ -200,22 +200,54 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
      * @returns {Promise<PlaceOrderResult>}
      */
     async placeOrder(params) {
+        console.log("[ALKASR INPUT PARAMS]", JSON.stringify(params, null, 2));
         const productId = params.productId ?? params.externalProductId;
         const amount = params.amount ?? params.quantity;
-        const playerId = params.playerId ?? '';
+
+        const playerId = String(
+            params.playerId
+            ?? params.uid
+            ?? params.player_id
+            ?? params.link
+            ?? params.target
+            ?? params.accountId
+            ?? ''
+        ).trim();
+
+        if (!playerId) {
+            return {
+                success: false,
+                providerOrderId: null,
+                providerStatus: 'Cancelled',
+                rawResponse: {
+                    status: 'ERROR',
+                    msg: 'Missing Alkasr Player ID mapping',
+                },
+                errorMessage: 'Missing Alkasr Player ID mapping',
+            };
+        }
+
         const orderUuid = crypto.randomUUID();
 
-        try {
-            const { data } = await this._client.get(
-                `/client/api/newOrder/${encodeURIComponent(productId)}/params`,
-                {
-                    params: {
-                        qty: amount,
-                        playerId,
-                        order_uuid: orderUuid,
-                    },
-                }
-            );
+    try {
+        console.log("[ALKASR FINAL REQUEST]", {
+            productId,
+            amount,
+            playerId,
+            orderUuid,
+            endpoint: `/client/api/newOrder/${encodeURIComponent(productId)}/params`,
+    });
+
+    const { data } = await this._client.get(
+        `/client/api/newOrder/${encodeURIComponent(productId)}/params`,
+        {
+            params: {
+                qty: amount,
+                playerId,
+                order_uuid: orderUuid,
+            },
+        }
+    );
 
             // Check for explicit API-level failure
             const topStatus = String(data.status ?? '').toUpperCase();
