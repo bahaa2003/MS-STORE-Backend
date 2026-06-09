@@ -13,6 +13,7 @@ const {
     ACTOR_ROLES,
 } = require('../audit/audit.constants');
 const { notifyNewTargetOrder, notifyTargetApproved, notifyTargetRejected } = require('../notifications/notification.service');
+const { sendAdminNotification } = require('../whatsapp/whatsapp.service');
 
 const normalizeMethods = (methods) => {
     return [...new Set((methods || []).map((method) => String(method).trim()).filter(Boolean))];
@@ -33,6 +34,47 @@ const assertPaymentMethodAllowed = (app, paymentMethod) => {
 };
 
 const toMoney = (value) => Number(Number(value).toFixed(2));
+
+const formatAdminWhatsAppValue = (value) => {
+    if (value === undefined || value === null || value === '') return '-';
+    if (typeof value === 'object') {
+        try {
+            return JSON.stringify(value);
+        } catch (_) {
+            return '[object]';
+        }
+    }
+    return String(value);
+};
+
+const notifyAdminWhatsAppNewTargetOrder = ({ order, customer }) => {
+    const customerName = customer?.name || 'غير متوفر';
+    const customerEmail = customer?.email || 'غير متوفر';
+    const shortId = String(order._id || '').slice(-6) || '-';
+
+    const message = [
+        'طلب تارجت جديد',
+        `رقم الطلب: ${shortId}`,
+        `العميل: ${customerName} - ${customerEmail}`,
+        `التطبيق: ${order.appNameSnapshot || '-'}`,
+        `عدد الكوينز: ${formatAdminWhatsAppValue(order.coinAmount)}`,
+        `السعر الإجمالي: ${formatAdminWhatsAppValue(order.totalPrice)}`,
+        `طريقة الدفع: ${order.paymentMethod || '-'}`,
+        `رقم التحويل: ${order.transferNumber || '-'}`,
+        `Sender ID: ${order.senderId || '-'}`,
+    ].join('\n');
+
+    sendAdminNotification(message, {
+        event: 'TARGET_ORDER_CREATED',
+        targetOrderId: order._id?.toString?.() || String(order._id),
+    }).then((result) => {
+        if (result && result.success === false) {
+            console.error('[WhatsApp] Admin target notification failed:', result.error || 'Unknown error');
+        }
+    }).catch((err) => {
+        console.error('[WhatsApp] Admin target notification failed:', err.message);
+    });
+};
 
 // =============================================================================
 // TARGET APPS
@@ -102,7 +144,7 @@ const createTargetOrder = async ({
     auditContext = null,
 }) => {
     const [user, app] = await Promise.all([
-        User.findById(userId).select('_id'),
+        User.findById(userId).select('_id name email'),
         TargetApp.findOne({ _id: appId, isActive: true }),
     ]);
 
@@ -162,6 +204,7 @@ const createTargetOrder = async ({
     });
 
     notifyNewTargetOrder(order);
+    notifyAdminWhatsAppNewTargetOrder({ order, customer: user });
 
     return order;
 };

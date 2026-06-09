@@ -7,6 +7,10 @@ const config = require('./config/config');
 const connectDB = require('./config/database');
 const fulfillmentJob = require('./modules/orders/fulfillmentJob');
 const syncProvidersJob = require('./modules/providers/syncProvidersJob');
+const {
+    initializeWhatsAppClient,
+    destroyWhatsAppClient,
+} = require('./modules/whatsapp/whatsapp.service');
 
 
 const startServer = async () => {
@@ -31,6 +35,10 @@ const startServer = async () => {
         syncProvidersJob.start();  // every 6 hours — syncs provider product catalogues
 
         // ── Graceful Shutdown ─────────────────────────────────────────────────────
+        initializeWhatsAppClient().catch((err) => {
+            console.error('[WhatsApp] Startup initialization failed:', err.message);
+        });
+
         const gracefulShutdown = (signal) => {
             console.log(`\n⚠️  Received ${signal}. Shutting down gracefully...`);
 
@@ -40,6 +48,8 @@ const startServer = async () => {
 
             server.close(async () => {
                 console.log('✅ HTTP server closed.');
+                await destroyWhatsAppClient();
+                console.log('[WhatsApp] Client closed.');
                 const mongoose = require('mongoose');
                 await mongoose.connection.close();
                 console.log('✅ MongoDB connection closed.');

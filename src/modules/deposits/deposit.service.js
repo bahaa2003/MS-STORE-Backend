@@ -13,6 +13,7 @@ const {
 const { createAuditLog } = require('../audit/audit.service');
 const { DEPOSIT_ACTIONS, WALLET_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('../audit/audit.constants');
 const { notifyNewDeposit, notifyDepositApproved, notifyDepositRejected } = require('../notifications/notification.service');
+const { sendAdminNotification } = require('../whatsapp/whatsapp.service');
 
 const safeParseJson = (value) => {
     if (typeof value !== 'string') return null;
@@ -65,6 +66,54 @@ const normalizeSenderDetails = (source = {}) => {
     };
 };
 
+const formatAdminWhatsAppValue = (value) => {
+    if (value === undefined || value === null || value === '') return '-';
+    if (typeof value === 'object') {
+        try {
+            return JSON.stringify(value);
+        } catch (_) {
+            return '[object]';
+        }
+    }
+    return String(value);
+};
+
+const formatSenderDetailsForWhatsApp = (senderDetails) => {
+    if (!senderDetails) return '-';
+    const label = senderDetails.label || senderDetails.field || 'بيانات المرسل';
+    const value = senderDetails.value || '';
+    const methodType = senderDetails.methodType ? ` (${senderDetails.methodType})` : '';
+    return value ? `${label}${methodType}: ${value}` : '-';
+};
+
+const notifyAdminWhatsAppNewDeposit = ({ deposit, customer }) => {
+    const customerName = customer?.name || 'غير متوفر';
+    const customerEmail = customer?.email || 'غير متوفر';
+    const shortId = String(deposit._id || '').slice(-6) || '-';
+
+    const message = [
+        'طلب شحن رصيد جديد',
+        `رقم الطلب: ${shortId}`,
+        `العميل: ${customerName} - ${customerEmail}`,
+        `المبلغ: ${formatAdminWhatsAppValue(deposit.requestedAmount)} ${deposit.currency || '-'}`,
+        `القيمة بالدولار: ${formatAdminWhatsAppValue(deposit.amountUsd)}`,
+        `طريقة الدفع: ${deposit.paymentMethodId || '-'}`,
+        `بيانات المرسل: ${formatSenderDetailsForWhatsApp(deposit.senderDetails)}`,
+        `ملاحظات: ${deposit.notes || '-'}`,
+    ].join('\n');
+
+    sendAdminNotification(message, {
+        event: 'DEPOSIT_REQUEST_CREATED',
+        depositId: deposit._id?.toString?.() || String(deposit._id),
+    }).then((result) => {
+        if (result && result.success === false) {
+            console.error('[WhatsApp] Admin deposit notification failed:', result.error || 'Unknown error');
+        }
+    }).catch((err) => {
+        console.error('[WhatsApp] Admin deposit notification failed:', err.message);
+    });
+};
+
 // =============================================================================
 // CREATE
 // =============================================================================
@@ -108,7 +157,7 @@ const createDepositRequest = async ({
     auditContext = null,
 }) => {
     // Confirm user exists (belt-and-suspenders — middleware already checks ACTIVE)
-    const user = await User.findById(userId).select('_id role');
+    const user = await User.findById(userId).select('_id name email role');
     if (!user) throw new NotFoundError('User');
 
     const deposit = await DepositRequest.create({
@@ -145,6 +194,7 @@ const createDepositRequest = async ({
     });
 
     notifyNewDeposit(deposit);
+    notifyAdminWhatsAppNewDeposit({ deposit, customer: user });
 
     return deposit;
 };

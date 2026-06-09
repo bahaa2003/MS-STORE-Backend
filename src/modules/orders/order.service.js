@@ -28,6 +28,7 @@ const { User } = require('../users/user.model');
 const { getLivePrice, invalidate: invalidatePriceCache } = require('../providers/providerPriceCache');
 const { toDecimal, toStr, toFiat, multiply, subtract, add, isPositive, compare } = require('../../shared/utils/decimalPrecision');
 const { notifyNewManualOrder, notifyOrderCompleted, notifyOrderFailed } = require('../notifications/notification.service');
+const { sendAdminNotification } = require('../whatsapp/whatsapp.service');
 
 const TRANSACTION_UNSUPPORTED_PATTERN = /Transaction numbers are only allowed|replica set member|mongos|transaction.*not supported/i;
 
@@ -111,6 +112,60 @@ const normalizeOrderInputPayload = (orderFieldsValues, customInputs) => {
         ...normalizedOrderFields,
         ...normalizeCustomInputsPayload(customInputs),
     };
+};
+
+const formatAdminWhatsAppValue = (value) => {
+    if (value === undefined || value === null || value === '') return '-';
+    if (typeof value === 'object') {
+        try {
+            return JSON.stringify(value);
+        } catch (_) {
+            return '[object]';
+        }
+    }
+    return String(value);
+};
+
+const formatAdminWhatsAppFields = (fields) => {
+    if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return '-';
+    const entries = Object.entries(fields).filter(([, value]) => value !== undefined && value !== null && value !== '');
+    if (!entries.length) return '-';
+    return entries
+        .map(([key, value]) => `${key}: ${formatAdminWhatsAppValue(value)}`)
+        .join('\n');
+};
+
+const notifyAdminWhatsAppNewOrder = ({ order, product, customer, fallbackFields }) => {
+    const customerName = customer?.name || 'غير متوفر';
+    const customerEmail = customer?.email || 'غير متوفر';
+    const productName = order.productId?.name || product?.name || 'غير متوفر';
+    const customFields = order.customerInput?.values || order.customInputs || fallbackFields || null;
+
+    const message = [
+        'طلب منتج جديد',
+        `رقم الطلب: #${order.orderNumber || order._id}`,
+        `العميل: ${customerName} - ${customerEmail}`,
+        `المنتج: ${productName}`,
+        `الكمية: ${order.quantity}`,
+        `الإجمالي: ${formatAdminWhatsAppValue(order.chargedAmount)} ${order.currency || 'USD'}`,
+        `القيمة بالدولار: ${formatAdminWhatsAppValue(order.usdAmount)}`,
+        `نوع التنفيذ: ${order.executionType || '-'}`,
+        `الحالة: ${order.status || '-'}`,
+        'بيانات الطلب:',
+        formatAdminWhatsAppFields(customFields),
+    ].join('\n');
+
+    sendAdminNotification(message, {
+        event: 'ORDER_CREATED',
+        orderId: order._id?.toString?.() || String(order._id),
+        orderNumber: order.orderNumber || null,
+    }).then((result) => {
+        if (result && result.success === false) {
+            console.error('[WhatsApp] Admin order notification failed:', result.error || 'Unknown error');
+        }
+    }).catch((err) => {
+        console.error('[WhatsApp] Admin order notification failed:', err.message);
+    });
 };
 
 const validateDynamicFieldsInput = (dynamicFields = [], submittedValues = {}) => {
@@ -573,7 +628,7 @@ const _attemptCreateOrder = async (
         // ── 3b. Currency Conversion ────────────────────────────────────────────
         // Fetch the user's preferred currency (within the session for consistency).
         // For USD users this is a no-op (rate = 1, finalAmount = usdTotalPrice).
-        const userDoc = await User.findById(userId).select('currency').session(session);
+        const userDoc = await User.findById(userId).select('name email currency').session(session);
         const userCurrency = userDoc?.currency ?? 'USD';
         const conversion = await convertUsdToUserCurrency(Number(toDecimal(usdTotalPrice).toNumber()), userCurrency);
         // ── FINAL ROUNDING — only place we round to 2dp ────────────────────
@@ -737,6 +792,13 @@ const _attemptCreateOrder = async (
         if (!isAutomatic) {
             notifyNewManualOrder(order);
         }
+
+        notifyAdminWhatsAppNewOrder({
+            order,
+            product,
+            customer: userDoc,
+            fallbackFields: orderFieldsValues,
+        });
 
         if (isAutomatic) {
             createAuditLog({

@@ -24,6 +24,7 @@ const depositRoutes = require('./modules/deposits/deposit.routes');
 const providerRoutes = require('./modules/providers/provider.routes');
 const adminCatalogRoutes = require('./modules/admin/admin.catalog.routes');
 const adminSettingsService = require('./modules/admin/admin.settings.service');
+const whatsappRoutes = require('./modules/whatsapp/whatsapp.routes');
 const adminRoutes = require('./modules/admin/admin.routes');    // ← dashboard router
 const meRoutes = require('./modules/me/me.routes');          // ← user panel
 const targetRoutes = require('./modules/targets/target.routes'); // ← target coin purchases
@@ -202,6 +203,7 @@ app.get(`${API_PREFIX}/public/catalog`, async (req, res) => {
 // ── Admin Routes ──────────────────────────────────────────────────────────────
 app.use(`${API_PREFIX}/admin`, adminRoutes);
 app.use(`${API_PREFIX}/admin`, adminCatalogRoutes);
+app.use(`${API_PREFIX}/admin/whatsapp`, whatsappRoutes);
 app.use(`${API_PREFIX}/admin/currencies`, currencyRoutes);
 
 // ── Generic Upload ────────────────────────────────────────────────────────────
