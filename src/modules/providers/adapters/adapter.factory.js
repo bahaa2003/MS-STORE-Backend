@@ -63,6 +63,11 @@ const registry = new Map([
     ['brand1 card', AlkasrVipAdapter], // name
     ['brand1card', AlkasrVipAdapter],  // compact
 
+    // ── brand1-card (Uses Alkasr Adapter) ─────────────────────────────────────
+    ['coins', AlkasrVipAdapter], // slug
+    ['coins', AlkasrVipAdapter], // name
+    ['coins', AlkasrVipAdapter],  // compact
+
 
     // ── Default test / dev adapter ────────────────────────────────────────────
     ['mock', MockProviderAdapter],
