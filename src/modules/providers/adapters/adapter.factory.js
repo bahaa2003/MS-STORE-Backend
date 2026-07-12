@@ -73,6 +73,11 @@ const registry = new Map([
     ['zero1 store', AlkasrVipAdapter], // name
     ['zero1store', AlkasrVipAdapter],  // compact
 
+        // ── zero1store (Uses Alkasr Adapter) ─────────────────────────────────────
+    ['top1-store', AlkasrVipAdapter], // slug
+    ['top1 store', AlkasrVipAdapter], // name
+    ['top1store', AlkasrVipAdapter],  // compact
+
 
     // ── Default test / dev adapter ────────────────────────────────────────────
     ['mock', MockProviderAdapter],
