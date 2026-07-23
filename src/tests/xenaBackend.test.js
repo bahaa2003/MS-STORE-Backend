@@ -79,6 +79,20 @@ class FakeXenaAdapter {
             requestId: 'req_balance',
         };
     }
+
+    async verifyTargetUser(params) {
+        FakeXenaAdapter.verifyTargetCalls.push(params);
+        if (FakeXenaAdapter.verifyTargetError) throw FakeXenaAdapter.verifyTargetError;
+        return FakeXenaAdapter.verifyTargetResult || {
+            uid: params.targetUid,
+            targetUid: params.targetUid,
+            nickname: 'Safe nickname',
+            avatar: null,
+            country: 'EG',
+            valid: true,
+            requestId: 'req_target',
+        };
+    }
 }
 
 FakeXenaAdapter.challengeCalls = [];
@@ -88,6 +102,9 @@ FakeXenaAdapter.verifyError = null;
 FakeXenaAdapter.connectionSnapshot = null;
 FakeXenaAdapter.balanceResult = null;
 FakeXenaAdapter.balanceError = null;
+FakeXenaAdapter.verifyTargetCalls = [];
+FakeXenaAdapter.verifyTargetResult = null;
+FakeXenaAdapter.verifyTargetError = null;
 
 class MatrixXenaAdapter extends FakeXenaAdapter {
     async placeOrder(params) {
@@ -140,6 +157,9 @@ const resetFakeAdapter = () => {
     FakeXenaAdapter.connectionSnapshot = null;
     FakeXenaAdapter.balanceResult = null;
     FakeXenaAdapter.balanceError = null;
+    FakeXenaAdapter.verifyTargetCalls = [];
+    FakeXenaAdapter.verifyTargetResult = null;
+    FakeXenaAdapter.verifyTargetError = null;
     MatrixXenaAdapter.reset();
     registerAdapter(XENA_PROVIDER_SLUG, FakeXenaAdapter);
     registerAdapter('xena recharge', FakeXenaAdapter);
@@ -365,6 +385,132 @@ describe('Xena connection lifecycle and product config', () => {
         expect(result.balance).not.toBe('[object Object]');
     });
 
+    it('verifies target UIDs as exact strings and returns safe metadata only', async () => {
+        const provider = await makeXenaProvider();
+        const result = await xenaSvc.verifyTargetForProduct({
+            product: { _id: provider._id },
+            provider,
+            targetUid: '001234567890',
+        });
+
+        expect(FakeXenaAdapter.verifyTargetCalls[0].targetUid).toBe('001234567890');
+        expect(typeof FakeXenaAdapter.verifyTargetCalls[0].targetUid).toBe('string');
+        expect(Number(FakeXenaAdapter.verifyTargetCalls[0].targetUid)).toBe(1234567890);
+        expect(result).toMatchObject({
+            valid: true,
+            targetUid: '001234567890',
+            user: {
+                uid: '001234567890',
+                nickname: 'Safe nickname',
+                avatar: null,
+                country: 'EG',
+            },
+        });
+        expect(JSON.stringify(result)).not.toContain('connectionId');
+        expect(JSON.stringify(result)).not.toContain('con_existing');
+    });
+
+    it.each([
+        ['missing target', undefined],
+        ['numeric target', 9178631],
+        ['non-digit target', '91786a1'],
+        ['too long target', '1'.repeat(51)],
+    ])('rejects %s locally before calling Xena', async (_label, targetUid) => {
+        const provider = await makeXenaProvider();
+        await expect(xenaSvc.verifyTargetForProduct({
+            product: { _id: provider._id },
+            provider,
+            targetUid,
+        })).rejects.toMatchObject({ code: 'INVALID_XENA_TARGET_UID' });
+        expect(FakeXenaAdapter.verifyTargetCalls).toHaveLength(0);
+    });
+
+    it.each([
+        ['not found', new XenaApiError('User not found', { statusCode: 404, code: 'USER_NOT_FOUND' }), 'XENA_TARGET_INVALID', 404],
+        ['401 provider auth', new XenaApiError('Unauthorized', { statusCode: 401, code: 'XENA_UNAUTHORIZED' }), 'XENA_PROVIDER_AUTH_FAILED', 502],
+        ['reauth required', new XenaApiError('Session expired', { statusCode: 409, code: 'REAUTHENTICATION_REQUIRED' }), 'XENA_REAUTHENTICATION_REQUIRED', 409],
+        ['rate limited', new XenaApiError('Rate limit', { statusCode: 429, code: 'XENA_RATE_LIMIT' }), 'XENA_RATE_LIMITED', 429],
+        ['timeout', new XenaApiError('Timeout', { code: 'ECONNABORTED', retryable: true, uncertain: true }), 'XENA_VERIFICATION_UNAVAILABLE', 503],
+        ['upstream 500', new XenaApiError('Bad gateway', { statusCode: 500, code: 'XENA_BAD_GATEWAY' }), 'XENA_VERIFICATION_UNAVAILABLE', 503],
+        ['malformed success response', new XenaApiError('Malformed response', { statusCode: 502, code: 'XENA_INVALID_TARGET_RESPONSE' }), 'XENA_VERIFICATION_UNAVAILABLE', 503],
+    ])('maps upstream %s without collapsing to invalid UID', async (_label, error, expectedCode, expectedStatus) => {
+        const provider = await makeXenaProvider();
+        FakeXenaAdapter.verifyTargetError = error;
+
+        await expect(xenaSvc.verifyTargetForProduct({
+            product: { _id: provider._id },
+            provider,
+            targetUid: '9178631',
+        })).rejects.toMatchObject({ code: expectedCode, statusCode: expectedStatus });
+        if (expectedCode !== 'XENA_TARGET_INVALID') {
+            await expect(xenaSvc.verifyTargetForProduct({
+                product: { _id: provider._id },
+                provider,
+                targetUid: '9178631',
+            })).rejects.not.toMatchObject({ code: 'XENA_TARGET_INVALID' });
+        }
+        FakeXenaAdapter.verifyTargetError = null;
+    });
+
+    it('persists reauthentication state when verification proves the Xena connection is stale', async () => {
+        const provider = await makeXenaProvider();
+        FakeXenaAdapter.verifyTargetError = new XenaApiError('Session expired', {
+            statusCode: 409,
+            code: 'REAUTHENTICATION_REQUIRED',
+        });
+
+        await expect(xenaSvc.verifyTargetForProduct({
+            product: { _id: provider._id },
+            provider,
+            targetUid: '9178631',
+        })).rejects.toMatchObject({ code: 'XENA_REAUTHENTICATION_REQUIRED' });
+
+        const saved = await Provider.findById(provider._id).lean();
+        expect(saved.xenaConfig.connectionId).toBe('con_existing');
+        expect(saved.xenaConfig.connectionStatus).toBe(XENA_CONNECTION_STATUS.REAUTHENTICATION_REQUIRED);
+    });
+
+    it('returns a reauthentication error when no stored connection exists', async () => {
+        const provider = await makeXenaProvider({
+            xenaConfig: { connectionId: null, connectionStatus: XENA_CONNECTION_STATUS.CONNECTED },
+        });
+
+        await expect(xenaSvc.verifyTargetForProduct({
+            product: { _id: provider._id },
+            provider,
+            targetUid: '9178631',
+        })).rejects.toMatchObject({ code: 'XENA_REAUTHENTICATION_REQUIRED', statusCode: 409 });
+        expect(FakeXenaAdapter.verifyTargetCalls).toHaveLength(0);
+    });
+
+    it('target verification does not create orders, wallet transactions, or sensitive logs', async () => {
+        const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        const { customer } = await createCustomerWithGroup({ walletBalance: 100, creditLimit: 0 }, { percentage: 0 });
+        const provider = await makeXenaProvider();
+        FakeXenaAdapter.verifyTargetError = new XenaApiError('Rate limit', {
+            statusCode: 429,
+            code: 'XENA_RATE_LIMIT',
+            requestId: 'req_safe',
+        });
+
+        await expect(xenaSvc.verifyTargetForProduct({
+            product: { _id: provider._id },
+            provider,
+            targetUid: '9178631',
+        })).rejects.toMatchObject({ code: 'XENA_RATE_LIMITED' });
+
+        expect(await Order.countDocuments()).toBe(0);
+        expect(await WalletTransaction.countDocuments({ userId: customer._id })).toBe(0);
+        expect((await freshUser(customer._id)).walletBalance).toBe(100);
+        const logged = JSON.stringify(warnSpy.mock.calls);
+        expect(logged).toContain('verify_target_user');
+        expect(logged).not.toContain('9178631');
+        expect(logged).not.toContain('con_existing');
+        expect(logged).not.toContain('xena-token');
+        expect(logged).not.toContain('Authorization');
+        warnSpy.mockRestore();
+    });
+
     it.each([
         ['0.00001', true],
         ['1', true],
@@ -453,6 +599,14 @@ describe('Xena admin HTTP connection lifecycle', () => {
     const adminToken = async () => {
         const admin = await createAdmin();
         return jwt.sign({ id: admin._id, role: admin.role }, config.jwt.secret, { expiresIn: '1h' });
+    };
+
+    const customerToken = async () => {
+        const { customer } = await createCustomerWithGroup({ walletBalance: 100, creditLimit: 0 }, { percentage: 0 });
+        return {
+            customer,
+            token: jwt.sign({ id: customer._id, role: customer.role }, config.jwt.secret, { expiresIn: '1h' }),
+        };
     };
 
     const request = async (method, path, token, body = undefined) => {
@@ -567,6 +721,48 @@ describe('Xena admin HTTP connection lifecycle', () => {
         const saved = await Provider.findById(provider._id).lean();
         expect(JSON.stringify(saved)).not.toContain('123456');
         expect(JSON.stringify(saved)).not.toContain('secret-password');
+    });
+
+    it('verifies a customer Xena target without accepting or exposing browser connection ids', async () => {
+        const { token } = await customerToken();
+        const provider = await makeXenaProvider();
+        const providerProduct = await ProviderProduct.create({
+            provider: provider._id,
+            externalProductId: XENA_DYNAMIC_PRODUCT_ID,
+            rawName: 'Xena Dynamic Recharge',
+            rawPrice: '1',
+            minQty: 1,
+            maxQty: 100,
+            isActive: true,
+        });
+        const product = await Product.create({
+            name: 'Xena Product',
+            basePrice: '1',
+            minQty: 1,
+            maxQty: 100,
+            isActive: true,
+            executionType: 'manual',
+            provider: provider._id,
+            providerProduct: providerProduct._id,
+            orderFields: [xenaSvc.getCanonicalOrderField()],
+            providerMapping: { target_uid: 'targetUid' },
+        });
+
+        const response = await request('POST', `/api/me/products/${product._id}/verify-target`, token, {
+            targetUid: ' 001234 ',
+            connectionId: 'browser-tamper',
+        });
+
+        expect(response.status).toBe(200);
+        expect(FakeXenaAdapter.verifyTargetCalls[0]).toMatchObject({ targetUid: '001234' });
+        expect(FakeXenaAdapter.verifyTargetCalls[0]).not.toHaveProperty('connectionId');
+        expect(JSON.stringify(response.json)).not.toContain('connectionId');
+        expect(JSON.stringify(response.json)).not.toContain('con_existing');
+        expect(response.json.data).toMatchObject({
+            valid: true,
+            targetUid: '001234',
+            user: { uid: '001234' },
+        });
     });
 
     it('only connected Xena providers enable fulfillment preflight', async () => {

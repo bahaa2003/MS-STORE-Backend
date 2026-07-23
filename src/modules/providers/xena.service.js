@@ -3,6 +3,7 @@
 const { Provider } = require('./provider.model');
 const { ProviderProduct } = require('./providerProduct.model');
 const { getProviderAdapter } = require('./adapters/adapter.factory');
+const crypto = require('crypto');
 const { TARGET_UID_RE } = require('./adapters/xena.adapter');
 const { AppError, BusinessRuleError, NotFoundError } = require('../../shared/errors/AppError');
 const { createAuditLog } = require('../audit/audit.service');
@@ -46,11 +47,33 @@ const maskTargetUid = (uid) => {
 };
 
 const assertTargetUid = (targetUid) => {
-    const uid = String(targetUid ?? '').trim();
-    if (!TARGET_UID_RE.test(uid) || uid.length > 50) {
+    if (typeof targetUid !== 'string') {
+        throw new BusinessRuleError('Xena ID must contain digits only and be at most 50 characters.', 'INVALID_XENA_TARGET_UID');
+    }
+    const uid = targetUid.trim();
+    if (!uid || !TARGET_UID_RE.test(uid) || uid.length > 50) {
         throw new BusinessRuleError('Xena ID must contain digits only and be at most 50 characters.', 'INVALID_XENA_TARGET_UID');
     }
     return uid;
+};
+
+const hashTargetUid = (uid) => crypto
+    .createHash('sha256')
+    .update(String(uid))
+    .digest('hex')
+    .slice(0, 12);
+
+const logXenaTargetDiagnostic = ({ provider, uid, error, outcome }) => {
+    if (!['development', 'test'].includes(process.env.NODE_ENV)) return;
+    console.warn('[XenaTargetVerification]', {
+        operation: 'verify_target_user',
+        providerId: provider?._id ? String(provider._id) : null,
+        upstreamStatus: error?.statusCode ?? null,
+        upstreamCode: error?.code ?? null,
+        requestId: error?.requestId ?? null,
+        targetUidHash: uid ? hashTargetUid(uid) : null,
+        outcome,
+    });
 };
 
 const isXenaProvider = (provider) => (
@@ -299,11 +322,92 @@ const ensureConnectedForFulfillment = (provider) => {
     }
 };
 
+const markXenaReauthenticationRequired = async (provider, err = {}) => {
+    if (!provider) return;
+    provider.xenaConfig = provider.xenaConfig || {};
+    provider.xenaConfig.connectionStatus = XENA_CONNECTION_STATUS.REAUTHENTICATION_REQUIRED;
+    provider.xenaConfig.lastErrorCode = err.code ?? 'XENA_REAUTHENTICATION_REQUIRED';
+    provider.xenaConfig.lastErrorMessage = 'Xena connection requires login again.';
+    provider.xenaConfig.lastCheckedAt = new Date();
+    await provider.save();
+};
+
+const isTargetInvalidError = (err) => {
+    const status = Number(err?.statusCode);
+    const code = String(err?.code || '').trim().toUpperCase();
+    const message = String(err?.message || '').trim().toUpperCase();
+    if (status === 404) return true;
+    if (['INVALID_TARGET_UID', 'TARGET_INVALID', 'XENA_TARGET_INVALID', 'TARGET_NOT_FOUND', 'USER_NOT_FOUND', 'XENA_USER_NOT_FOUND'].includes(code)) {
+        return true;
+    }
+    if (status === 400 && /(TARGET|USER).*(INVALID|NOT_FOUND|NOT FOUND)|INVALID.*(TARGET|USER)/.test(`${code} ${message}`)) {
+        return true;
+    }
+    return false;
+};
+
+const isReauthenticationError = (err) => {
+    const status = Number(err?.statusCode);
+    const code = String(err?.code || '').trim().toUpperCase();
+    const message = String(err?.message || '').trim().toUpperCase();
+    const combined = `${code} ${message}`;
+    if (['XENA_CONNECTION_REQUIRED', 'REAUTHENTICATION_REQUIRED', 'XENA_REAUTHENTICATION_REQUIRED'].includes(code)) return true;
+    if (status === 409 && /(REAUTH|SESSION|CONNECTION|EXPIRED|DISCONNECTED|LOGIN)/.test(combined)) return true;
+    if (/(REAUTHENTICATION_REQUIRED|SESSION_EXPIRED|CONNECTION_EXPIRED|INVALID_CONNECTION|DISCONNECTED|LOGIN_REQUIRED)/.test(combined)) return true;
+    return false;
+};
+
+const mapXenaTargetVerificationError = async (err, { provider, uid } = {}) => {
+    if (err?.isOperational && !String(err.code || '').startsWith('XENA_')) return err;
+
+    if (isTargetInvalidError(err)) {
+        logXenaTargetDiagnostic({ provider, uid, error: err, outcome: 'target_invalid' });
+        return new AppError('Xena ID is not valid.', 404, 'XENA_TARGET_INVALID');
+    }
+
+    if (isReauthenticationError(err)) {
+        await markXenaReauthenticationRequired(provider, err);
+        logXenaTargetDiagnostic({ provider, uid, error: err, outcome: 'reauthentication_required' });
+        return new AppError('Xena connection requires login again.', 409, 'XENA_REAUTHENTICATION_REQUIRED');
+    }
+
+    const status = Number(err?.statusCode);
+    const code = String(err?.code || '').trim().toUpperCase();
+    const message = String(err?.message || '').trim().toUpperCase();
+    if (/(CLIENT API KEY|API KEY|API TOKEN|TOKEN).*(REQUIRED|MISSING|INVALID)|AUTHORIZATION|UNAUTHORIZED/.test(message)) {
+        logXenaTargetDiagnostic({ provider, uid, error: err, outcome: 'provider_auth_failed' });
+        return new AppError('Xena provider authentication failed.', 502, 'XENA_PROVIDER_AUTH_FAILED');
+    }
+    if (status === 401 || status === 403) {
+        logXenaTargetDiagnostic({ provider, uid, error: err, outcome: 'provider_auth_failed' });
+        return new AppError('Xena provider authentication failed.', 502, 'XENA_PROVIDER_AUTH_FAILED');
+    }
+
+    if (status === 429 || code === 'XENA_RATE_LIMIT' || code === 'RATE_LIMITED') {
+        logXenaTargetDiagnostic({ provider, uid, error: err, outcome: 'rate_limited' });
+        return new AppError('Xena verification is temporarily busy. Please try again shortly.', 429, 'XENA_RATE_LIMITED');
+    }
+
+    logXenaTargetDiagnostic({ provider, uid, error: err, outcome: 'verification_unavailable' });
+    return new AppError('Xena verification is temporarily unavailable.', 503, 'XENA_VERIFICATION_UNAVAILABLE');
+};
+
 const verifyTargetForProduct = async ({ product, provider, targetUid, auditContext = {} }) => {
-    ensureConnectedForFulfillment(provider);
     const uid = assertTargetUid(targetUid);
-    const adapter = getXenaAdapter(provider);
-    const result = await adapter.verifyTargetUser({ targetUid: uid });
+    if (provider?.xenaConfig?.connectionStatus !== XENA_CONNECTION_STATUS.CONNECTED || !provider?.xenaConfig?.connectionId) {
+        if (!provider?.xenaConfig?.connectionId || provider?.xenaConfig?.connectionStatus === XENA_CONNECTION_STATUS.REAUTHENTICATION_REQUIRED) {
+            await markXenaReauthenticationRequired(provider, { code: 'XENA_CONNECTION_REQUIRED' });
+        }
+        throw new AppError('Xena connection requires login again.', 409, 'XENA_REAUTHENTICATION_REQUIRED');
+    }
+
+    let result;
+    try {
+        const adapter = getXenaAdapter(provider);
+        result = await adapter.verifyTargetUser({ targetUid: uid });
+    } catch (err) {
+        throw await mapXenaTargetVerificationError(err, { provider, uid });
+    }
 
     createXenaAuditLog({
         actorId: auditContext.actorId,
@@ -321,15 +425,22 @@ const verifyTargetForProduct = async ({ product, provider, targetUid, auditConte
     });
 
     if (result.valid !== true) {
-        throw new BusinessRuleError('Xena ID is not valid.', 'XENA_TARGET_INVALID');
+        throw new AppError('Xena ID is not valid.', 404, 'XENA_TARGET_INVALID');
     }
 
     return {
+        valid: true,
+        targetUid: uid,
+        user: {
+            uid: result.uid,
+            nickname: result.nickname,
+            avatar: result.avatar,
+            country: result.country,
+        },
         uid: result.uid,
         nickname: result.nickname,
         avatar: result.avatar,
         country: result.country,
-        valid: result.valid,
     };
 };
 

@@ -80,10 +80,11 @@ router.post(
     [
         param('id').isMongoId().withMessage('Invalid product ID'),
         body('targetUid')
+            .trim()
             .notEmpty().withMessage('targetUid is required')
             .isString().withMessage('targetUid must be a string')
             .matches(/^\d+$/).withMessage('targetUid must contain digits only')
-            .isLength({ max: 50 }).withMessage('targetUid cannot exceed 50 characters'),
+            .isLength({ min: 1, max: 50 }).withMessage('targetUid cannot exceed 50 characters'),
     ],
     validate,
     me.verifyProductTarget

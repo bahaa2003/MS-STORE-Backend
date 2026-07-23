@@ -783,6 +783,48 @@ describe('[10] XenaRechargeAdapter', () => {
         await expect(adapter.verifyTargetUser({ targetUid: '123456' })).resolves.toMatchObject({ uid: '123456', valid: true });
     });
 
+    it('verifies target users through the stored connection id and preserves UID strings', async () => {
+        const { adapter, client } = makeXenaAdapter({}, {
+            xenaConfig: {
+                connectionId: 'con_123',
+                connectionStatus: 'connected',
+                product: { isActive: true },
+            },
+        });
+        client.get.mockResolvedValueOnce({
+            data: {
+                data: {
+                    uid: '001234567890',
+                    nickname: 'Safe nickname',
+                    avatar: null,
+                    country: 'EG',
+                },
+                requestId: 'req_user',
+            },
+        });
+
+        const result = await adapter.verifyTargetUser({ targetUid: '001234567890' });
+
+        expect(client.get).toHaveBeenCalledWith('/v1/connections/con_123/users/001234567890');
+        expect(result).toMatchObject({
+            uid: '001234567890',
+            targetUid: '001234567890',
+            valid: true,
+            requestId: 'req_user',
+        });
+        expect(typeof result.uid).toBe('string');
+    });
+
+    it('rejects malformed target verification success responses as unavailable-class errors', async () => {
+        const { adapter, client } = makeXenaAdapter();
+        client.get.mockResolvedValueOnce({ data: { data: { nickname: 'No UID' }, requestId: 'req_bad' } });
+
+        await expect(adapter.verifyTargetUser({ targetUid: '9178631' })).rejects.toMatchObject({
+            code: 'XENA_INVALID_TARGET_RESPONSE',
+            statusCode: 502,
+        });
+    });
+
     it('sends Idempotency-Key and stable clientReference when creating recharge', async () => {
         const { adapter, client } = makeXenaAdapter();
         client.post.mockResolvedValueOnce({

@@ -98,6 +98,46 @@ const extractBalancePayload = (payload) => {
     });
 };
 
+const normalizeTargetUserPayload = (payload, fallbackUid) => {
+    const source = payload?.data?.user ?? payload?.data?.target ?? payload?.data ?? payload?.user ?? payload?.target ?? payload;
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+        throw new XenaApiError('Malformed Xena target verification response.', {
+            statusCode: 502,
+            code: 'XENA_INVALID_TARGET_RESPONSE',
+        });
+    }
+
+    const hasReturnedUid = source.uid !== undefined || source.targetUid !== undefined;
+    const explicitValid = source.valid === true || payload?.valid === true || payload?.data?.valid === true;
+    const explicitInvalid = source.valid === false || payload?.valid === false || payload?.data?.valid === false;
+    if (!hasReturnedUid && !explicitValid && !explicitInvalid) {
+        throw new XenaApiError('Malformed Xena target verification response.', {
+            statusCode: 502,
+            code: 'XENA_INVALID_TARGET_RESPONSE',
+        });
+    }
+
+    const uid = String(source.uid ?? source.targetUid ?? fallbackUid ?? '').trim();
+    if (!uid || !TARGET_UID_RE.test(uid) || uid.length > 50) {
+        throw new XenaApiError('Malformed Xena target verification response.', {
+            statusCode: 502,
+            code: 'XENA_INVALID_TARGET_RESPONSE',
+        });
+    }
+
+    const valid = explicitInvalid ? false : true;
+
+    return {
+        uid,
+        targetUid: uid,
+        nickname: typeof source.nickname === 'string' ? source.nickname.trim() : null,
+        avatar: typeof source.avatar === 'string' ? source.avatar.trim() : null,
+        country: typeof source.country === 'string' ? source.country.trim() : null,
+        valid,
+        requestId: payload?.requestId ?? payload?.data?.requestId ?? null,
+    };
+};
+
 const buildClient = (baseURL, token, timeoutMs) => {
     const client = axios.create({
         baseURL: baseURL || XENA_BASE_URL,
@@ -253,13 +293,7 @@ class XenaRechargeAdapter extends BaseProviderAdapter {
         const { data } = await this._client.get(
             `/v1/connections/${encodeURIComponent(resolvedConnectionId)}/users/${encodeURIComponent(uid)}`
         );
-        return {
-            uid: String(data.uid ?? uid),
-            nickname: data.nickname ?? null,
-            avatar: data.avatar ?? null,
-            country: data.country ?? null,
-            valid: data.valid === true,
-        };
+        return normalizeTargetUserPayload(data, uid);
     }
 
     async getBalance(connectionId = null) {
@@ -437,4 +471,5 @@ module.exports = {
     mapRechargeStatus,
     normalizeBalanceScalar,
     extractBalancePayload,
+    normalizeTargetUserPayload,
 };
