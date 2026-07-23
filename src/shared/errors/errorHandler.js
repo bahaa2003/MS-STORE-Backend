@@ -13,8 +13,23 @@ const handleCastError = (err) =>
  * Handle Mongoose duplicate key error
  */
 const handleDuplicateKeyError = (err) => {
-    const field = Object.keys(err.keyValue)[0];
-    const value = err.keyValue[field];
+    const isIdempotencyIndex = (
+        err?.index === 'unique_user_idempotency_key'
+        || String(err?.message || err?.errmsg || '').includes('unique_user_idempotency_key')
+        || (err?.keyPattern?.userId === 1 && err?.keyPattern?.idempotencyKey === 1)
+    );
+
+    if (isIdempotencyIndex) {
+        return new AppError(
+            'This purchase key has already been used for a different request.',
+            409,
+            'IDEMPOTENCY_KEY_REUSED'
+        );
+    }
+
+    const keyValue = err.keyValue || {};
+    const field = Object.keys(keyValue)[0] || 'unknown';
+    const value = keyValue[field];
     return new AppError(
         `Duplicate value for field '${field}': '${value}'. Please use a different value.`,
         409,

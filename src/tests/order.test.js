@@ -19,8 +19,15 @@
 
 const mongoose = require('mongoose');
 const orderService = require('../modules/orders/order.service');
+const globalErrorHandler = require('../shared/errors/errorHandler');
 const { WalletTransaction } = require('../modules/wallet/walletTransaction.model');
 const { Order } = require('../modules/orders/order.model');
+const {
+    ensureOrderIdempotencyIndex,
+    INDEX_NAME,
+    INDEX_KEY,
+    PARTIAL_FILTER,
+} = require('../../scripts/migrations/fix-order-idempotency-index');
 const {
     connectTestDB,
     disconnectTestDB,
@@ -60,13 +67,43 @@ beforeEach(async () => {
 // HELPER
 // ─────────────────────────────────────────────────────────────────────────────
 
-const placeOrder = (overrides = {}) =>
-    orderService.createOrder({
+const placeOrder = (overrides = {}) => {
+    const payload = {
         userId: overrides.userId,
         productId: overrides.productId,
         quantity: overrides.quantity ?? 1,
-        idempotencyKey: overrides.idempotencyKey ?? null,
-    });
+        orderFieldsValues: overrides.orderFieldsValues ?? null,
+        customInputs: overrides.customInputs ?? null,
+        provider: overrides.provider ?? null,
+    };
+    if (Object.prototype.hasOwnProperty.call(overrides, 'idempotencyKey')) {
+        payload.idempotencyKey = overrides.idempotencyKey;
+    }
+    return orderService.createOrder(payload);
+};
+
+const fakeResponse = () => ({
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn().mockReturnThis(),
+});
+
+const customerIdForMessage = () => new mongoose.Types.ObjectId();
+
+const quietLogger = {
+    log: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+};
+
+const dropIdempotencyIndexIfExists = async () => {
+    try {
+        await Order.collection.dropIndex(INDEX_NAME);
+    } catch (err) {
+        if (!['IndexNotFound', 'NamespaceNotFound'].includes(err.codeName) && err.code !== 27) {
+            throw err;
+        }
+    }
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. ORDER WITHIN WALLET BALANCE
@@ -318,6 +355,85 @@ describe('Double refund prevention', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Idempotency key protection', () => {
+    it('declares a non-sparse partial unique index for meaningful idempotency keys only', () => {
+        const idempotencyIndex = Order.schema.indexes().find(([, options]) => (
+            options?.name === INDEX_NAME
+        ));
+
+        expect(idempotencyIndex).toBeDefined();
+        expect(idempotencyIndex[0]).toEqual({ userId: 1, idempotencyKey: 1 });
+        expect(idempotencyIndex[1]).toMatchObject({
+            unique: true,
+            name: INDEX_NAME,
+            partialFilterExpression: PARTIAL_FILTER,
+        });
+        expect(idempotencyIndex[1].sparse).not.toBe(true);
+    });
+
+    it('allows the same user to create multiple orders without an idempotency key', async () => {
+        const customer = await createCustomer({ groupId: defaultGroup._id, walletBalance: 500 });
+        const product = await createProduct({ basePrice: 50 });
+
+        await placeOrder({ userId: customer._id, productId: product._id });
+        await placeOrder({ userId: customer._id, productId: product._id });
+
+        expect(await Order.countDocuments({ userId: customer._id })).toBe(2);
+        expect(await countTransactions(customer._id)).toBe(2);
+        expect((await freshUser(customer._id)).walletBalance).toBe(400);
+    });
+
+    it('allows repeated undefined, null, empty, and whitespace idempotency keys without persisting them', async () => {
+        const customer = await createCustomer({ groupId: defaultGroup._id, walletBalance: 1000 });
+        const product = await createProduct({ basePrice: 25 });
+
+        await placeOrder({ userId: customer._id, productId: product._id, idempotencyKey: undefined });
+        await placeOrder({ userId: customer._id, productId: product._id, idempotencyKey: null });
+        await placeOrder({ userId: customer._id, productId: product._id, idempotencyKey: '' });
+        await placeOrder({ userId: customer._id, productId: product._id, idempotencyKey: '   ' });
+
+        const orders = await Order.find({ userId: customer._id }).lean();
+        expect(orders).toHaveLength(4);
+        for (const order of orders) {
+            expect(Object.prototype.hasOwnProperty.call(order, 'idempotencyKey')).toBe(false);
+        }
+        expect(await countTransactions(customer._id)).toBe(4);
+    });
+
+    it('rejects non-string idempotency keys when supplied', async () => {
+        const customer = await createCustomer({ groupId: defaultGroup._id, walletBalance: 100 });
+        const product = await createProduct({ basePrice: 10 });
+
+        await expect(placeOrder({
+            userId: customer._id,
+            productId: product._id,
+            idempotencyKey: 123,
+        })).rejects.toMatchObject({
+            code: 'INVALID_IDEMPOTENCY_KEY',
+            statusCode: 422,
+        });
+    });
+
+    it('normalizes meaningful idempotency keys by trimming whitespace', async () => {
+        const customer = await createCustomer({ groupId: defaultGroup._id, walletBalance: 500 });
+        const product = await createProduct({ basePrice: 50 });
+
+        const { order: first, idempotent: isFirst } = await placeOrder({
+            userId: customer._id,
+            productId: product._id,
+            idempotencyKey: '  trimmed-key  ',
+        });
+        const { order: second, idempotent: isSecond } = await placeOrder({
+            userId: customer._id,
+            productId: product._id,
+            idempotencyKey: 'trimmed-key',
+        });
+
+        expect(isFirst).toBe(false);
+        expect(isSecond).toBe(true);
+        expect(second._id.toString()).toBe(first._id.toString());
+        expect((await Order.findById(first._id).lean()).idempotencyKey).toBe('trimmed-key');
+    });
+
     it('returns the same order and does NOT deduct funds twice', async () => {
         const customer = await createCustomer({ groupId: defaultGroup._id, walletBalance: 500 });
         const product = await createProduct({ basePrice: 100 });
@@ -396,6 +512,171 @@ describe('Idempotency key protection', () => {
         const userB = await freshUser(customerB._id);
         expect(userA.walletBalance).toBe(450);
         expect(userB.walletBalance).toBe(450);
+    });
+
+    it('rejects the same idempotency key when reused with a different product', async () => {
+        const customer = await createCustomer({ groupId: defaultGroup._id, walletBalance: 500 });
+        const productA = await createProduct({ basePrice: 50 });
+        const productB = await createProduct({ basePrice: 50 });
+        const key = 'same-key-different-product';
+
+        await placeOrder({ userId: customer._id, productId: productA._id, idempotencyKey: key });
+
+        await expect(placeOrder({
+            userId: customer._id,
+            productId: productB._id,
+            idempotencyKey: key,
+        })).rejects.toMatchObject({
+            code: 'IDEMPOTENCY_KEY_REUSED',
+            statusCode: 409,
+        });
+
+        expect(await Order.countDocuments({ userId: customer._id })).toBe(1);
+        expect(await countTransactions(customer._id)).toBe(1);
+    });
+
+    it('rejects the same idempotency key when reused with a different quantity', async () => {
+        const customer = await createCustomer({ groupId: defaultGroup._id, walletBalance: 500 });
+        const product = await createProduct({ basePrice: 50, minQty: 1, maxQty: 10 });
+        const key = 'same-key-different-qty';
+
+        await placeOrder({ userId: customer._id, productId: product._id, quantity: 1, idempotencyKey: key });
+
+        await expect(placeOrder({
+            userId: customer._id,
+            productId: product._id,
+            quantity: 2,
+            idempotencyKey: key,
+        })).rejects.toMatchObject({
+            code: 'IDEMPOTENCY_KEY_REUSED',
+            statusCode: 409,
+        });
+
+        expect(await Order.countDocuments({ userId: customer._id })).toBe(1);
+        expect(await countTransactions(customer._id)).toBe(1);
+    });
+
+    it('rejects the same idempotency key when normalized dynamic fields differ', async () => {
+        const customer = await createCustomer({ groupId: defaultGroup._id, walletBalance: 500 });
+        const product = await createProduct({
+            basePrice: 50,
+            orderFields: [{
+                id: 'player_id',
+                key: 'player_id',
+                label: 'Player ID',
+                type: 'text',
+                required: true,
+            }],
+        });
+        const key = 'same-key-different-fields';
+
+        await placeOrder({
+            userId: customer._id,
+            productId: product._id,
+            idempotencyKey: key,
+            orderFieldsValues: { player_id: '12345' },
+        });
+
+        await expect(placeOrder({
+            userId: customer._id,
+            productId: product._id,
+            idempotencyKey: key,
+            orderFieldsValues: { player_id: '67890' },
+        })).rejects.toMatchObject({
+            code: 'IDEMPOTENCY_KEY_REUSED',
+            statusCode: 409,
+        });
+
+        expect(await Order.countDocuments({ userId: customer._id })).toBe(1);
+        expect(await countTransactions(customer._id)).toBe(1);
+    });
+
+    it('treats equivalent normalized dynamic fields as the same idempotent request', async () => {
+        const customer = await createCustomer({ groupId: defaultGroup._id, walletBalance: 500 });
+        const product = await createProduct({
+            basePrice: 50,
+            orderFields: [{
+                id: 'player_id',
+                key: 'player_id',
+                label: 'Player ID',
+                type: 'text',
+                required: true,
+            }],
+        });
+        const key = 'same-key-equivalent-fields';
+
+        const { order: first } = await placeOrder({
+            userId: customer._id,
+            productId: product._id,
+            idempotencyKey: key,
+            orderFieldsValues: { player_id: ' 12345 ' },
+        });
+
+        const { order: second, idempotent } = await placeOrder({
+            userId: customer._id,
+            productId: product._id,
+            idempotencyKey: key,
+            orderFieldsValues: { 'Player ID': '12345' },
+        });
+
+        expect(idempotent).toBe(true);
+        expect(second._id.toString()).toBe(first._id.toString());
+        expect(await countTransactions(customer._id)).toBe(1);
+    });
+
+    it('concurrent identical idempotent requests create one order and one debit', async () => {
+        const customer = await createCustomer({ groupId: defaultGroup._id, walletBalance: 500 });
+        const product = await createProduct({ basePrice: 100 });
+        const key = 'concurrent-idem-key';
+
+        const results = await Promise.allSettled([
+            placeOrder({ userId: customer._id, productId: product._id, idempotencyKey: key }),
+            placeOrder({ userId: customer._id, productId: product._id, idempotencyKey: key }),
+        ]);
+
+        expect(results.every((result) => result.status === 'fulfilled')).toBe(true);
+        const orders = results.map((result) => result.value.order);
+        expect(orders[0]._id.toString()).toBe(orders[1]._id.toString());
+        expect(await Order.countDocuments({ userId: customer._id })).toBe(1);
+        expect(await countTransactions(customer._id)).toBe(1);
+        expect((await freshUser(customer._id)).walletBalance).toBe(400);
+    });
+
+    it('normalizes idempotency duplicate errors without saying userId is duplicated or exposing key values', () => {
+        const err = new Error('duplicate key');
+        err.code = 11000;
+        err.index = INDEX_NAME;
+        err.keyPattern = { userId: 1, idempotencyKey: 1 };
+        err.keyValue = { userId: customerIdForMessage(), idempotencyKey: 'secret-key' };
+
+        const res = fakeResponse();
+        globalErrorHandler(err, {}, res, jest.fn());
+
+        expect(res.status).toHaveBeenCalledWith(409);
+        const body = res.json.mock.calls[0][0];
+        expect(body).toMatchObject({
+            success: false,
+            code: 'IDEMPOTENCY_KEY_REUSED',
+            message: 'This purchase key has already been used for a different request.',
+        });
+        expect(JSON.stringify(body)).not.toContain('userId');
+        expect(JSON.stringify(body)).not.toContain('secret-key');
+    });
+
+    it('preserves unrelated duplicate key handling', () => {
+        const err = new Error('duplicate key');
+        err.code = 11000;
+        err.index = 'users_email_unique';
+        err.keyPattern = { email: 1 };
+        err.keyValue = { email: 'taken@example.com' };
+
+        const res = fakeResponse();
+        globalErrorHandler(err, {}, res, jest.fn());
+
+        const body = res.json.mock.calls[0][0];
+        expect(res.status).toHaveBeenCalledWith(409);
+        expect(body.code).toBe('DUPLICATE_KEY');
+        expect(body.message).toContain("field 'email'");
     });
 });
 
@@ -513,5 +794,80 @@ describe('Concurrent order requests', () => {
         expect(txns).toHaveLength(2);
         const refundCount = txns.filter((t) => t.type === 'REFUND').length;
         expect(refundCount).toBe(1);
+    });
+});
+
+describe('Order idempotency index migration', () => {
+    it('creates the correct partial index and can run twice', async () => {
+        await dropIdempotencyIndexIfExists();
+        await Order.collection.createIndex(INDEX_KEY, {
+            unique: true,
+            sparse: true,
+            name: INDEX_NAME,
+        });
+
+        const first = await ensureOrderIdempotencyIndex({
+            db: mongoose.connection.db,
+            logger: quietLogger,
+        });
+        const second = await ensureOrderIdempotencyIndex({
+            db: mongoose.connection.db,
+            logger: quietLogger,
+        });
+
+        const index = (await Order.collection.indexes()).find((entry) => entry.name === INDEX_NAME);
+        expect(first.changed).toBe(true);
+        expect(second.changed).toBe(false);
+        expect(index).toMatchObject({
+            key: INDEX_KEY,
+            unique: true,
+            partialFilterExpression: PARTIAL_FILTER,
+        });
+        expect(index.sparse).not.toBe(true);
+    });
+
+    it('ignores missing, null, and empty idempotency keys and does not mutate orders', async () => {
+        await dropIdempotencyIndexIfExists();
+        const userId = new mongoose.Types.ObjectId();
+        const docs = [
+            { _id: new mongoose.Types.ObjectId(), userId, productId: new mongoose.Types.ObjectId(), orderNumber: 910001, quantity: 1 },
+            { _id: new mongoose.Types.ObjectId(), userId, productId: new mongoose.Types.ObjectId(), orderNumber: 910002, quantity: 1, idempotencyKey: null },
+            { _id: new mongoose.Types.ObjectId(), userId, productId: new mongoose.Types.ObjectId(), orderNumber: 910003, quantity: 1, idempotencyKey: '' },
+        ];
+        await Order.collection.insertMany(docs);
+        const before = await Order.collection.find({}, { sort: { _id: 1 } }).toArray();
+
+        await ensureOrderIdempotencyIndex({
+            db: mongoose.connection.db,
+            logger: quietLogger,
+        });
+
+        const after = await Order.collection.find({}, { sort: { _id: 1 } }).toArray();
+        expect(after).toEqual(before);
+        const index = (await Order.collection.indexes()).find((entry) => entry.name === INDEX_NAME);
+        expect(index.partialFilterExpression).toEqual(PARTIAL_FILTER);
+    });
+
+    it('aborts when duplicated meaningful idempotency keys exist and leaves orders unchanged', async () => {
+        await dropIdempotencyIndexIfExists();
+        const userId = new mongoose.Types.ObjectId();
+        const docs = [
+            { _id: new mongoose.Types.ObjectId(), userId, productId: new mongoose.Types.ObjectId(), orderNumber: 920001, quantity: 1, idempotencyKey: 'real-key' },
+            { _id: new mongoose.Types.ObjectId(), userId, productId: new mongoose.Types.ObjectId(), orderNumber: 920002, quantity: 2, idempotencyKey: 'real-key' },
+        ];
+        await Order.collection.insertMany(docs);
+        const before = await Order.collection.find({}, { sort: { _id: 1 } }).toArray();
+
+        await expect(ensureOrderIdempotencyIndex({
+            db: mongoose.connection.db,
+            logger: quietLogger,
+        })).rejects.toMatchObject({
+            code: 'ORDER_IDEMPOTENCY_INDEX_CONFLICTS',
+        });
+
+        const after = await Order.collection.find({}, { sort: { _id: 1 } }).toArray();
+        const index = (await Order.collection.indexes()).find((entry) => entry.name === INDEX_NAME);
+        expect(after).toEqual(before);
+        expect(index).toBeUndefined();
     });
 });

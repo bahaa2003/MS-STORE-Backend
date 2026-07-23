@@ -214,8 +214,6 @@ const orderSchema = new mongoose.Schema(
         idempotencyKey: {
             type: String,
             trim: true,
-            default: null,
-            sparse: true,
         },
 
         // ── Timestamps for audit ─────────────────────────────────────────────
@@ -413,10 +411,19 @@ orderSchema.index({ userId: 1, createdAt: -1 });
 orderSchema.index({ status: 1 });
 orderSchema.index({ groupIdSnapshot: 1 });
 
-/** Idempotency enforcement — sparse because not all orders carry a key. */
+/** Idempotency enforcement: only meaningful, non-empty string keys are unique. */
 orderSchema.index(
     { userId: 1, idempotencyKey: 1 },
-    { unique: true, sparse: true, name: 'unique_user_idempotency_key' }
+    {
+        unique: true,
+        name: 'unique_user_idempotency_key',
+        partialFilterExpression: {
+            idempotencyKey: {
+                $type: 'string',
+                $gt: '',
+            },
+        },
+    }
 );
 
 /**

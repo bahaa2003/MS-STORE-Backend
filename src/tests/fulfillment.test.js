@@ -624,5 +624,7 @@ describe('[6] createOrder -- AUTOMATIC executionType', () => {
         // Wallet debited only once
         const freshCustomer = await User.findById(customer._id);
         expect(freshCustomer.walletBalance).toBe(950);
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(provider.placeOrder).toHaveBeenCalledTimes(1);
     });
 });

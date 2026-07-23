@@ -13,6 +13,7 @@ const { validateOrderFields } = require('./orderFields.validator');
 const xenaSvc = require('../providers/xena.service');
 const { XENA_DYNAMIC_PRODUCT_ID, XENA_TARGET_FIELD_KEY } = require('../providers/xena.constants');
 const {
+    AppError,
     NotFoundError,
     BusinessRuleError,
 } = require('../../shared/errors/AppError');
@@ -65,6 +66,105 @@ const endSessionQuietly = (session) => {
     } catch (_) {
         // already ended
     }
+};
+
+const IDEMPOTENCY_INDEX_NAME = 'unique_user_idempotency_key';
+
+const makeIdempotencyKeyReusedError = () => new AppError(
+    'This purchase key has already been used for a different request.',
+    409,
+    'IDEMPOTENCY_KEY_REUSED'
+);
+
+const normalizeIdempotencyKey = (idempotencyKey) => {
+    if (idempotencyKey === undefined || idempotencyKey === null) return undefined;
+    if (typeof idempotencyKey !== 'string') {
+        throw new BusinessRuleError('Idempotency key must be a string.', 'INVALID_IDEMPOTENCY_KEY');
+    }
+
+    const trimmed = idempotencyKey.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+};
+
+const isOrderIdempotencyDuplicateError = (err) => {
+    if (err?.code !== 11000) return false;
+    if (err?.index === IDEMPOTENCY_INDEX_NAME) return true;
+    if (String(err?.message || err?.errmsg || '').includes(IDEMPOTENCY_INDEX_NAME)) return true;
+
+    const keyPattern = err?.keyPattern || {};
+    return keyPattern.userId === 1 && keyPattern.idempotencyKey === 1;
+};
+
+const getObjectIdString = (value) => {
+    const raw = value?._id ?? value;
+    return raw?.toString?.() ?? String(raw ?? '');
+};
+
+const stableNormalize = (value) => {
+    if (value === undefined) return null;
+    if (value === null) return null;
+    if (value instanceof Date) return value.toISOString();
+    if (Array.isArray(value)) return value.map(stableNormalize);
+    if (typeof value === 'object') {
+        return Object.keys(value).sort().reduce((acc, key) => {
+            const normalized = stableNormalize(value[key]);
+            if (normalized !== undefined) acc[key] = normalized;
+            return acc;
+        }, {});
+    }
+    return value;
+};
+
+const stableStringify = (value) => JSON.stringify(stableNormalize(value));
+
+const getComparableCustomerValues = (customerInput) => {
+    if (!customerInput || typeof customerInput !== 'object') return {};
+    const values = customerInput.values ?? customerInput;
+    return values && typeof values === 'object' && !Array.isArray(values) ? values : {};
+};
+
+const idempotentRequestMatchesOrder = ({ existing, product, quantity, customerInput, providerCode = null }) => {
+    if (!existing) return false;
+
+    const existingProductId = getObjectIdString(existing.productId);
+    const requestedProductId = getObjectIdString(product?._id ?? product);
+    if (existingProductId !== requestedProductId) return false;
+
+    if (Number(existing.quantity) !== Number(quantity)) return false;
+
+    const existingProviderCode = existing.providerCode ? String(existing.providerCode).toLowerCase().trim() : null;
+    const requestedProviderCode = providerCode ? String(providerCode).toLowerCase().trim() : null;
+    if (existingProviderCode !== requestedProviderCode) return false;
+
+    return stableStringify(getComparableCustomerValues(existing.customerInput)) ===
+        stableStringify(getComparableCustomerValues(customerInput));
+};
+
+const findExistingIdempotentOrder = (userId, idempotencyKey, session = null) => {
+    const query = Order.findOne({ userId, idempotencyKey })
+        .populate('productId', 'name basePrice executionType providerProduct');
+    return session ? query.session(session) : query;
+};
+
+const resolveIdempotentExistingOrder = async ({
+    userId,
+    idempotencyKey,
+    product,
+    quantity,
+    customerInput,
+    providerCode = null,
+    session = null,
+}) => {
+    if (!idempotencyKey) return null;
+
+    const existing = await findExistingIdempotentOrder(userId, idempotencyKey, session);
+    if (!existing) return null;
+
+    if (!idempotentRequestMatchesOrder({ existing, product, quantity, customerInput, providerCode })) {
+        throw makeIdempotencyKeyReusedError();
+    }
+
+    return existing;
 };
 
 const DYNAMIC_INPUT_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -401,17 +501,10 @@ const createOrder = async ({
     customInputs = null,
     provider = null,   // ← injected; null = auto-resolve from factory
 }) => {
+    const normalizedIdempotencyKey = normalizeIdempotencyKey(idempotencyKey);
     const normalizedOrderInput = normalizeOrderInputPayload(orderFieldsValues, customInputs);
 
     // ── Pre-transaction: Idempotency Check ───────────────────────────────────
-    if (idempotencyKey) {
-        const existing = await Order.findOne({ userId, idempotencyKey })
-            .populate('productId', 'name basePrice executionType providerProduct');
-        if (existing) {
-            return { order: existing, idempotent: true };
-        }
-    }
-
     // ── Auto-resolve provider adapter (production flow) ──────────────────────
     // If no adapter was injected (i.e. called from HTTP controller), resolve
     // the adapter from the factory using the product's linked Provider doc.
@@ -466,7 +559,7 @@ const createOrder = async ({
         userId,
         productId,
         quantity,
-        idempotencyKey,
+        idempotencyKey: normalizedIdempotencyKey,
         auditContext,
         orderFieldsValues: normalizedOrderInput,
         provider: resolvedProvider,
@@ -557,6 +650,21 @@ const _attemptCreateOrder = async (
             // No formal schema — save raw values so the fulfillment engine
             // can forward them to the provider (e.g. { link: '...' }).
             customerInput = { values: orderFieldsValues, fieldsSnapshot: [] };
+        }
+
+        const existingIdempotentOrder = await resolveIdempotentExistingOrder({
+            userId,
+            idempotencyKey,
+            product,
+            quantity: qty,
+            customerInput,
+            providerCode,
+            session,
+        });
+
+        if (existingIdempotentOrder) {
+            await abortTransactionQuietly(session);
+            return { order: existingIdempotentOrder, idempotent: true };
         }
 
         // ── 2c. JIT Provider Price Verification ────────────────────────────────
@@ -728,7 +836,7 @@ const _attemptCreateOrder = async (
                 order = await Order.create(orderData);
             }
         } catch (createErr) {
-            if (createErr.code === 11000 && idempotencyKey) {
+            if (isOrderIdempotencyDuplicateError(createErr) && idempotencyKey) {
                 if (!session) {
                     await refundWalletAtomic({
                         userId,
@@ -742,8 +850,15 @@ const _attemptCreateOrder = async (
                 }
                 await abortTransactionQuietly(session);
                 endSessionQuietly(session);
-                const existing = await Order.findOne({ userId, idempotencyKey })
-                    .populate('productId', 'name basePrice executionType providerProduct');
+                const existing = await resolveIdempotentExistingOrder({
+                    userId,
+                    idempotencyKey,
+                    product,
+                    quantity: qty,
+                    customerInput,
+                    providerCode,
+                });
+                if (!existing) throw createErr;
                 return { order: existing, idempotent: true };
             }
             if (!session) {
@@ -1275,4 +1390,9 @@ module.exports = {
     listOrdersForUser,
     listAllOrders,
     getOrderById,
+    __private: {
+        normalizeIdempotencyKey,
+        isOrderIdempotencyDuplicateError,
+        idempotentRequestMatchesOrder,
+    },
 };
