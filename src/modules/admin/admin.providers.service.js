@@ -10,9 +10,10 @@
 const { Provider } = require('../providers/provider.model');
 const providerDomainService = require('../providers/provider.service');
 const { getProviderAdapter } = require('../providers/adapters/adapter.factory');
-const { NotFoundError, BusinessRuleError } = require('../../shared/errors/AppError');
+const { NotFoundError, BusinessRuleError, AppError } = require('../../shared/errors/AppError');
 const { createAuditLog } = require('../audit/audit.service');
 const { ADMIN_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('../audit/audit.constants');
+const { XENA_PROVIDER_SLUG } = require('../providers/xena.constants');
 
 // ─── List ──────────────────────────────────────────────────────────────────────
 
@@ -142,7 +143,31 @@ const getProviderBalance = async (id) => {
     if (!provider.isActive) throw new BusinessRuleError('Provider is inactive.', 'PROVIDER_INACTIVE');
 
     const adapter = getProviderAdapter(provider, { strict: true });
-    const balance = await adapter.getBalance();
+    let balance;
+    try {
+        balance = await adapter.getBalance();
+    } catch (err) {
+        if (err?.name === 'XenaApiError' || String(err?.code || '').startsWith('XENA_')) {
+            throw new AppError(
+                err.message || 'Xena balance request failed.',
+                err.statusCode || 502,
+                err.code || 'XENA_BALANCE_ERROR'
+            );
+        }
+        throw err;
+    }
+
+    if (String(provider.slug || '').trim().toLowerCase() === XENA_PROVIDER_SLUG) {
+        return {
+            provider: provider.name,
+            balance: balance?.balance ?? null,
+            currency: balance?.currency ?? null,
+            checkedAt: balance?.checkedAt ?? null,
+            requestId: balance?.requestId ?? null,
+            source: balance?.source ?? 'xena_live',
+        };
+    }
+
     return { provider: provider.name, balance };
 };
 

@@ -779,7 +779,7 @@ describe('[10] XenaRechargeAdapter', () => {
         await expect(adapter.verifyConnection({ connectionId: 'con_123', code: '1234' }))
             .resolves.toMatchObject({ status: 'connected', requestId: 'req_2' });
         await expect(adapter.getConnection()).resolves.toMatchObject({ status: 'connected', maskedUsername: 'ag***@example.com' });
-        await expect(adapter.getBalance()).resolves.toMatchObject({ balance: 19439706, source: 'xena_live' });
+        await expect(adapter.getBalance()).resolves.toMatchObject({ balance: '19439706', currency: null, source: 'xena_live' });
         await expect(adapter.verifyTargetUser({ targetUid: '123456' })).resolves.toMatchObject({ uid: '123456', valid: true });
     });
 

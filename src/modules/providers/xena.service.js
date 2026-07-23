@@ -72,11 +72,49 @@ const assertXenaProvider = async (providerId, { requireActive = false } = {}) =>
 
 const getXenaAdapter = (provider) => getProviderAdapter(provider, { strict: true });
 
+const normalizeConnectionStatus = (status, fallback = XENA_CONNECTION_STATUS.PENDING) => {
+    const normalized = String(status || '').trim().toLowerCase();
+    return Object.values(XENA_CONNECTION_STATUS).includes(normalized) ? normalized : fallback;
+};
+
+const toIsoOrNull = (value) => {
+    if (!value) return null;
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
+
+const sanitizeXenaConnectionSnapshot = (connection = {}) => {
+    const connectionExpiresAt = toIsoOrNull(connection.connectionExpiresAt || connection.expiresAt);
+    const tokenExpiresAt = toIsoOrNull(connection.tokenExpiresAt);
+    const lastCheckedAt = toIsoOrNull(connection.lastCheckedAt);
+    const expired = Boolean(connectionExpiresAt && new Date(connectionExpiresAt).getTime() <= Date.now());
+    const status = normalizeConnectionStatus(connection.connectionStatus || connection.status);
+
+    return {
+        connectionStatus: status,
+        status,
+        displayName: connection.displayName ?? null,
+        maskedUsername: connection.maskedUsername ?? null,
+        connectionExpiresAt,
+        tokenExpiresAt,
+        lastErrorCode: connection.lastErrorCode ?? null,
+        lastErrorMessage: connection.lastErrorMessage ?? null,
+        lastCheckedAt,
+        connectionExpired: expired,
+        needsReauthentication: expired || status === XENA_CONNECTION_STATUS.REAUTHENTICATION_REQUIRED,
+    };
+};
+
 const applySafeConnectionSnapshot = (provider, connection) => {
     provider.xenaConfig = provider.xenaConfig || {};
     provider.xenaConfig.connectionId = connection.connectionId ?? provider.xenaConfig.connectionId ?? null;
-    provider.xenaConfig.connectionStatus = connection.status ?? provider.xenaConfig.connectionStatus ?? XENA_CONNECTION_STATUS.PENDING;
-    provider.xenaConfig.connectionExpiresAt = connection.expiresAt ? new Date(connection.expiresAt) : provider.xenaConfig.connectionExpiresAt ?? null;
+    provider.xenaConfig.connectionStatus = normalizeConnectionStatus(
+        connection.status ?? connection.connectionStatus,
+        provider.xenaConfig.connectionStatus ?? XENA_CONNECTION_STATUS.PENDING
+    );
+    provider.xenaConfig.connectionExpiresAt = connection.expiresAt || connection.connectionExpiresAt
+        ? new Date(connection.expiresAt || connection.connectionExpiresAt)
+        : provider.xenaConfig.connectionExpiresAt ?? null;
     provider.xenaConfig.tokenExpiresAt = connection.tokenExpiresAt ? new Date(connection.tokenExpiresAt) : provider.xenaConfig.tokenExpiresAt ?? null;
     provider.xenaConfig.displayName = connection.displayName ?? provider.xenaConfig.displayName ?? null;
     provider.xenaConfig.maskedUsername = connection.maskedUsername ?? provider.xenaConfig.maskedUsername ?? null;
@@ -104,13 +142,14 @@ const challengeConnection = async (providerId, { displayName, username, password
     }
 
     provider.xenaConfig = provider.xenaConfig || {};
-    provider.xenaConfig.connectionId = result.connectionId;
-    provider.xenaConfig.connectionStatus = result.status;
-    provider.xenaConfig.connectionExpiresAt = result.expiresAt ? new Date(result.expiresAt) : null;
-    provider.xenaConfig.displayName = String(displayName).trim();
-    provider.xenaConfig.lastCheckedAt = new Date();
-    provider.xenaConfig.lastErrorCode = null;
-    provider.xenaConfig.lastErrorMessage = null;
+    applySafeConnectionSnapshot(provider, {
+        connectionId: result.connectionId,
+        status: result.status || XENA_CONNECTION_STATUS.VERIFICATION_REQUIRED,
+        expiresAt: result.expiresAt,
+        displayName: String(displayName).trim(),
+        lastErrorCode: null,
+        lastErrorMessage: null,
+    });
     await provider.save();
 
     createXenaAuditLog({
@@ -128,9 +167,7 @@ const challengeConnection = async (providerId, { displayName, username, password
     });
 
     return {
-        connectionId: result.connectionId,
-        status: result.status,
-        expiresAt: result.expiresAt,
+        ...sanitizeXenaConnectionSnapshot(provider.xenaConfig),
         requestId: result.requestId,
     };
 };
@@ -148,7 +185,7 @@ const verifyConnection = async (providerId, { code }, auditContext = {}) => {
     } catch (err) {
         throw asOperationalXenaError(err);
     }
-    provider.xenaConfig.connectionStatus = result.status;
+    provider.xenaConfig.connectionStatus = normalizeConnectionStatus(result.status, XENA_CONNECTION_STATUS.CONNECTED);
     provider.xenaConfig.lastCheckedAt = new Date();
     provider.xenaConfig.lastErrorCode = null;
     provider.xenaConfig.lastErrorMessage = null;
@@ -168,7 +205,10 @@ const verifyConnection = async (providerId, { code }, auditContext = {}) => {
         },
     });
 
-    return { status: result.status, requestId: result.requestId };
+    return {
+        ...sanitizeXenaConnectionSnapshot(provider.xenaConfig),
+        requestId: result.requestId,
+    };
 };
 
 const refreshConnection = async (providerId, auditContext = {}) => {
@@ -196,7 +236,7 @@ const refreshConnection = async (providerId, auditContext = {}) => {
         },
     });
 
-    return provider.xenaConfig;
+    return sanitizeXenaConnectionSnapshot(provider.xenaConfig);
 };
 
 const updateProductConfig = async (providerId, productConfig, auditContext = {}) => {
@@ -343,4 +383,6 @@ module.exports = {
     isXenaProviderProduct,
     mergeXenaProductBehavior,
     getCanonicalOrderField,
+    sanitizeXenaConnectionSnapshot,
+    normalizeConnectionStatus,
 };

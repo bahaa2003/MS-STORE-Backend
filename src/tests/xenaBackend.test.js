@@ -11,6 +11,7 @@ const { executeOrder, processOrderStatusResult, pollProcessingOrders } = require
 const xenaSvc = require('../modules/providers/xena.service');
 const syncService = require('../modules/providers/sync.service');
 const providerService = require('../modules/providers/provider.service');
+const adminProvidersService = require('../modules/admin/admin.providers.service');
 const { AuditLog } = require('../modules/audit/audit.model');
 const { createOrder } = require('../modules/orders/order.service');
 const { decryptCredential, isEncrypted } = require('../modules/providers/providerCredentialCrypto');
@@ -67,6 +68,17 @@ class FakeXenaAdapter {
             displayName: 'Agency',
         };
     }
+
+    async getBalance() {
+        if (FakeXenaAdapter.balanceError) throw FakeXenaAdapter.balanceError;
+        return FakeXenaAdapter.balanceResult || {
+            balance: '12345',
+            currency: null,
+            checkedAt: '2026-07-23T03:00:00.000Z',
+            source: 'xena_live',
+            requestId: 'req_balance',
+        };
+    }
 }
 
 FakeXenaAdapter.challengeCalls = [];
@@ -74,6 +86,8 @@ FakeXenaAdapter.verifyCalls = [];
 FakeXenaAdapter.challengeError = null;
 FakeXenaAdapter.verifyError = null;
 FakeXenaAdapter.connectionSnapshot = null;
+FakeXenaAdapter.balanceResult = null;
+FakeXenaAdapter.balanceError = null;
 
 class MatrixXenaAdapter extends FakeXenaAdapter {
     async placeOrder(params) {
@@ -124,6 +138,8 @@ const resetFakeAdapter = () => {
     FakeXenaAdapter.challengeError = null;
     FakeXenaAdapter.verifyError = null;
     FakeXenaAdapter.connectionSnapshot = null;
+    FakeXenaAdapter.balanceResult = null;
+    FakeXenaAdapter.balanceError = null;
     MatrixXenaAdapter.reset();
     registerAdapter(XENA_PROVIDER_SLUG, FakeXenaAdapter);
     registerAdapter('xena recharge', FakeXenaAdapter);
@@ -255,6 +271,7 @@ describe('Xena credentials', () => {
         const json = provider.toJSON();
         expect(json.apiToken).toBeUndefined();
         expect(json.apiKey).toBeUndefined();
+        expect(json.xenaConfig.connectionId).toBeUndefined();
         expect(json.credentialsConfigured).toBe(true);
 
         await providerService.updateProvider(provider._id, { apiToken: '' });
@@ -274,12 +291,15 @@ describe('Xena connection lifecycle and product config', () => {
             username: 'agency@example.com',
             password: 'super-secret-password',
         });
-        expect(challenge).toMatchObject({ connectionId: 'con_old', status: XENA_CONNECTION_STATUS.VERIFICATION_REQUIRED });
+        expect(challenge).toMatchObject({ status: XENA_CONNECTION_STATUS.VERIFICATION_REQUIRED });
+        expect(challenge.connectionId).toBeUndefined();
+        expect(JSON.stringify(challenge)).not.toContain('con_old');
         expect(FakeXenaAdapter.challengeCalls[0]).toMatchObject({ connectionId: 'con_old', username: 'agency@example.com' });
         expect(FakeXenaAdapter.challengeCalls[0].password).toBe('super-secret-password');
 
         const verify = await xenaSvc.verifyConnection(provider._id, { code: '123456', connectionId: 'browser-tamper' });
         expect(verify).toMatchObject({ status: XENA_CONNECTION_STATUS.CONNECTED });
+        expect(verify.connectionId).toBeUndefined();
         expect(FakeXenaAdapter.verifyCalls[0]).toMatchObject({ connectionId: 'con_old', code: '123456' });
 
         const saved = await Provider.findById(provider._id).lean();
@@ -289,6 +309,60 @@ describe('Xena connection lifecycle and product config', () => {
         const logs = await AuditLog.find({ entityId: provider._id }).lean();
         expect(JSON.stringify(logs)).not.toContain('super-secret-password');
         expect(JSON.stringify(logs)).not.toContain('123456');
+    });
+
+    it('preserves existing connection metadata when reconnect challenge fails', async () => {
+        const provider = await makeXenaProvider({
+            xenaConfig: {
+                connectionId: 'con_old',
+                connectionStatus: XENA_CONNECTION_STATUS.CONNECTED,
+                displayName: 'Existing Agency',
+                maskedUsername: 'old***@example.com',
+            },
+        });
+        FakeXenaAdapter.challengeError = new XenaApiError('Challenge failed', {
+            statusCode: 502,
+            code: 'XENA_BAD_GATEWAY',
+        });
+
+        await expect(xenaSvc.challengeConnection(provider._id, {
+            displayName: 'New Agency',
+            username: 'new@example.com',
+            password: 'new-password',
+        })).rejects.toMatchObject({ code: 'XENA_BAD_GATEWAY' });
+
+        const saved = await Provider.findById(provider._id).lean();
+        expect(saved.xenaConfig).toMatchObject({
+            connectionId: 'con_old',
+            connectionStatus: XENA_CONNECTION_STATUS.CONNECTED,
+            displayName: 'Existing Agency',
+            maskedUsername: 'old***@example.com',
+        });
+        expect(JSON.stringify(saved)).not.toContain('new-password');
+    });
+
+    it('returns the admin Xena balance contract as a scalar without inventing currency', async () => {
+        const provider = await makeXenaProvider();
+        FakeXenaAdapter.balanceResult = {
+            balance: '12345',
+            currency: null,
+            checkedAt: '2026-07-23T03:00:00.000Z',
+            requestId: 'req_balance',
+            source: 'xena_live',
+        };
+
+        const result = await adminProvidersService.getProviderBalance(provider._id);
+
+        expect(result).toMatchObject({
+            provider: provider.name,
+            balance: '12345',
+            currency: null,
+            checkedAt: '2026-07-23T03:00:00.000Z',
+            requestId: 'req_balance',
+            source: 'xena_live',
+        });
+        expect(typeof result.balance).toBe('string');
+        expect(result.balance).not.toBe('[object Object]');
     });
 
     it.each([
@@ -407,15 +481,22 @@ describe('Xena admin HTTP connection lifecycle', () => {
         });
         expect(success.status).toBe(200);
         expect(JSON.stringify(success.json)).not.toContain('secret-password');
+        expect(JSON.stringify(success.json)).not.toContain('connectionId');
+        expect(JSON.stringify(success.json)).not.toContain('con_new');
         expect(FakeXenaAdapter.challengeCalls[0]).toMatchObject({ username: 'agency@example.com' });
+        expect(FakeXenaAdapter.challengeCalls[0].connectionId).toBeNull();
 
         const reconnect = await request('POST', `/api/admin/providers/${provider._id}/xena/challenge`, token, {
             displayName: 'Agency',
             username: 'agency@example.com',
             password: 'secret-password-2',
+            connectionId: 'browser-tamper',
         });
         expect(reconnect.status).toBe(200);
         expect(FakeXenaAdapter.challengeCalls[1].connectionId).toBe('con_new');
+        expect(FakeXenaAdapter.challengeCalls[1].connectionId).not.toBe('browser-tamper');
+        expect(JSON.stringify(reconnect.json)).not.toContain('connectionId');
+        expect(JSON.stringify(reconnect.json)).not.toContain('con_new');
 
         const invalid = await request('POST', `/api/admin/providers/${provider._id}/xena/challenge`, token, {
             displayName: 'Agency',
@@ -446,6 +527,8 @@ describe('Xena admin HTTP connection lifecycle', () => {
         expect(verified.status).toBe(200);
         expect(FakeXenaAdapter.verifyCalls[0]).toMatchObject({ connectionId: 'con_verify', code: '123456' });
         expect(JSON.stringify(verified.json)).not.toContain('123456');
+        expect(JSON.stringify(verified.json)).not.toContain('connectionId');
+        expect(JSON.stringify(verified.json)).not.toContain('con_verify');
 
         for (const [statusCode, code] of [[400, 'INVALID_CODE'], [410, 'EXPIRED_CODE']]) {
             FakeXenaAdapter.verifyError = new XenaApiError(code, { statusCode, code });
@@ -471,9 +554,14 @@ describe('Xena admin HTTP connection lifecycle', () => {
             const response = await request('GET', `/api/admin/providers/${provider._id}/xena/connection`, token);
             expect(response.status).toBe(200);
             expect(JSON.stringify(response.json)).toContain(status);
+            expect(JSON.stringify(response.json)).not.toContain('connectionId');
+            expect(JSON.stringify(response.json)).not.toContain('con_verify');
             expect(JSON.stringify(response.json)).not.toContain('xena-token');
             expect(JSON.stringify(response.json)).not.toContain('apiToken');
             expect(JSON.stringify(response.json)).not.toContain('123456');
+            if (status === XENA_CONNECTION_STATUS.REAUTHENTICATION_REQUIRED) {
+                expect(response.json.data.connection.needsReauthentication).toBe(true);
+            }
         }
 
         const saved = await Provider.findById(provider._id).lean();
@@ -557,6 +645,71 @@ describe('Xena order safety', () => {
 });
 
 describe('Xena adapter idempotency and uncertainty', () => {
+    it('includes a backend-stored connection id on reconnect challenge and omits it for first-time challenge', async () => {
+        const provider = await makeXenaProvider();
+        const client = makeFakeAxios();
+        client.post.mockResolvedValue({ data: { data: { connectionId: 'con_new', status: XENA_CONNECTION_STATUS.VERIFICATION_REQUIRED } } });
+        const adapter = new XenaRechargeAdapter(provider, { client });
+
+        await adapter.challengeConnection({
+            connectionId: 'con_existing',
+            displayName: 'Agency',
+            username: 'agency@example.com',
+            password: 'secret-password',
+        });
+        expect(client.post.mock.calls[0][1]).toMatchObject({
+            connectionId: 'con_existing',
+            displayName: 'Agency',
+            username: 'agency@example.com',
+            password: 'secret-password',
+        });
+
+        await adapter.challengeConnection({
+            connectionId: null,
+            displayName: 'Agency',
+            username: 'agency@example.com',
+            password: 'secret-password',
+        });
+        expect(client.post.mock.calls[1][1]).not.toHaveProperty('connectionId');
+    });
+
+    it.each([
+        ['numeric balance', 12345, '12345'],
+        ['numeric-string balance', '12345.6789', '12345.6789'],
+        ['wrapped balance', { balance: '777' }, '777'],
+        ['data wrapped balance', { data: { balance: 88.5 } }, '88.5'],
+    ])('normalizes %s to a safe scalar string', async (_label, upstream, expected) => {
+        const provider = await makeXenaProvider();
+        const client = makeFakeAxios();
+        client.get.mockResolvedValue({ data: upstream });
+        const adapter = new XenaRechargeAdapter(provider, { client });
+
+        const result = await adapter.getBalance();
+        expect(result).toMatchObject({
+            balance: expected,
+            currency: null,
+            source: 'xena_live',
+        });
+        expect(result.balance).not.toBe('[object Object]');
+    });
+
+    it.each([
+        ['malformed object', { balance: { amount: '12' } }],
+        ['missing balance', { data: {} }],
+        ['array balance', { balance: ['12'] }],
+        ['infinite balance', { balance: 'Infinity' }],
+    ])('rejects %s balance safely', async (_label, upstream) => {
+        const provider = await makeXenaProvider();
+        const client = makeFakeAxios();
+        client.get.mockResolvedValue({ data: upstream });
+        const adapter = new XenaRechargeAdapter(provider, { client });
+
+        await expect(adapter.getBalance()).rejects.toMatchObject({
+            code: 'XENA_INVALID_BALANCE_RESPONSE',
+            statusCode: 502,
+        });
+    });
+
     it('retries the same order with identical idempotency key and immutable body', async () => {
         const provider = await makeXenaProvider();
         const client = makeFakeAxios();

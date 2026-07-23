@@ -245,6 +245,9 @@ const stripProviderSecrets = (_doc, ret) => {
     delete ret.apiToken;
     delete ret.apiKey;
     delete ret.effectiveToken;
+    if (ret.xenaConfig && typeof ret.xenaConfig === 'object') {
+        delete ret.xenaConfig.connectionId;
+    }
     ret.credentialsConfigured = hasCredential;
     return ret;
 };

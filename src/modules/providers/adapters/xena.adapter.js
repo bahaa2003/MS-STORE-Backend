@@ -14,6 +14,7 @@ const {
 const DEFAULT_TIMEOUT_MS = parseInt(process.env.XENA_API_TIMEOUT_MS ?? '20000', 10);
 const DEFAULT_STATUS_CONCURRENCY = parseInt(process.env.XENA_STATUS_CHECK_CONCURRENCY ?? '3', 10);
 const TARGET_UID_RE = /^\d+$/;
+const DECIMAL_SCALAR_RE = /^[+-]?(?:\d+|\d+\.\d+|\.\d+)$/;
 
 const isPositiveSafeInteger = (value) => (
     Number.isSafeInteger(Number(value))
@@ -54,6 +55,47 @@ const mapRechargeStatus = (status) => {
         default:
             return { providerStatus: 'Pending', outcomeUncertain: false };
     }
+};
+
+const normalizeBalanceScalar = (value) => {
+    if (typeof value === 'number') {
+        if (!Number.isFinite(value)) return null;
+        return String(value);
+    }
+
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed || trimmed === '[object Object]' || !DECIMAL_SCALAR_RE.test(trimmed)) return null;
+        const numeric = Number(trimmed);
+        if (!Number.isFinite(numeric)) return null;
+        return trimmed;
+    }
+
+    return null;
+};
+
+const extractBalancePayload = (payload) => {
+    const sources = [
+        payload,
+        payload?.balance,
+        payload?.data,
+        payload?.data?.balance,
+    ];
+
+    for (const source of sources) {
+        const balance = normalizeBalanceScalar(source);
+        if (balance !== null) {
+            const currency = typeof payload?.currency === 'string'
+                ? payload.currency.trim()
+                : (typeof payload?.data?.currency === 'string' ? payload.data.currency.trim() : null);
+            return { balance, currency: currency || null };
+        }
+    }
+
+    throw new XenaApiError('Malformed Xena balance response.', {
+        statusCode: 502,
+        code: 'XENA_INVALID_BALANCE_RESPONSE',
+    });
 };
 
 const buildClient = (baseURL, token, timeoutMs) => {
@@ -190,6 +232,8 @@ class XenaRechargeAdapter extends BaseProviderAdapter {
             displayName: data.displayName ?? null,
             maskedUsername: data.username ?? null,
             status: data.status,
+            expiresAt: data.expiresAt ?? data.connectionExpiresAt ?? null,
+            connectionExpiresAt: data.connectionExpiresAt ?? data.expiresAt ?? null,
             tokenExpiresAt: data.tokenExpiresAt ?? null,
             lastErrorCode: data.lastErrorCode ?? null,
             lastErrorMessage: data.lastErrorMessage ?? null,
@@ -222,8 +266,10 @@ class XenaRechargeAdapter extends BaseProviderAdapter {
         const resolvedConnectionId = connectionId || this.provider.xenaConfig?.connectionId;
         if (!resolvedConnectionId) throw new XenaApiError('Missing Xena connectionId', { code: 'XENA_CONNECTION_REQUIRED' });
         const { data } = await this._client.get(`/v1/connections/${encodeURIComponent(resolvedConnectionId)}/balance`);
+        const normalized = extractBalancePayload(data);
         return {
-            balance: data?.data?.balance ?? null,
+            balance: normalized.balance,
+            currency: normalized.currency,
             source: 'xena_live',
             checkedAt: new Date().toISOString(),
             requestId: data?.requestId ?? null,
@@ -389,4 +435,6 @@ module.exports = {
     TARGET_UID_RE,
     isPositiveSafeInteger,
     mapRechargeStatus,
+    normalizeBalanceScalar,
+    extractBalancePayload,
 };
