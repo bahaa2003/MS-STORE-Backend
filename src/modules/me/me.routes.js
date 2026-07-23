@@ -75,6 +75,20 @@ router.get(
     me.getProduct
 );
 
+router.post(
+    '/products/:id/verify-target',
+    [
+        param('id').isMongoId().withMessage('Invalid product ID'),
+        body('targetUid')
+            .notEmpty().withMessage('targetUid is required')
+            .isString().withMessage('targetUid must be a string')
+            .matches(/^\d+$/).withMessage('targetUid must contain digits only')
+            .isLength({ max: 50 }).withMessage('targetUid cannot exceed 50 characters'),
+    ],
+    validate,
+    me.verifyProductTarget
+);
+
 // ─── Orders ───────────────────────────────────────────────────────────────────
 
 const createOrderValidation = [

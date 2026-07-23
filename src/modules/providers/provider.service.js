@@ -13,11 +13,11 @@ const {
 // PROVIDER CRUD
 // =============================================================================
 
-const createProvider = async ({ name, baseUrl, apiKey, apiToken, syncInterval, isActive }) => {
+const createProvider = async ({ name, slug, baseUrl, apiKey, apiToken, syncInterval, isActive, supportedFeatures }) => {
     const existing = await Provider.findOne({ name: new RegExp(`^${name}$`, 'i') });
     if (existing) throw new ConflictError(`A provider named '${name}' already exists.`);
 
-    return Provider.create({ name, baseUrl, apiKey, apiToken, syncInterval, isActive });
+    return Provider.create({ name, slug, baseUrl, apiKey, apiToken, syncInterval, isActive, supportedFeatures });
 };
 
 const listProviders = async ({ includeInactive = false } = {}) => {
@@ -32,10 +32,12 @@ const getProviderById = async (providerId) => {
 };
 
 const updateProvider = async (providerId, updates) => {
-    const allowed = ['name', 'baseUrl', 'apiKey', 'apiToken', 'syncInterval', 'isActive']; 
+    const allowed = ['name', 'slug', 'baseUrl', 'apiKey', 'apiToken', 'syncInterval', 'isActive', 'supportedFeatures'];
     const safe = Object.fromEntries(
         Object.entries(updates).filter(([k]) => allowed.includes(k))
     );
+    if (safe.apiToken !== undefined && String(safe.apiToken).trim() === '') delete safe.apiToken;
+    if (safe.apiKey !== undefined && String(safe.apiKey).trim() === '') delete safe.apiKey;
 
     const p = await Provider.findByIdAndUpdate(
         providerId,

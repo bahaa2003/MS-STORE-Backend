@@ -331,6 +331,11 @@ const productSchema = new mongoose.Schema(
                         default: true,
                     },
 
+                    verifiable: {
+                        type: Boolean,
+                        default: false,
+                    },
+
                     /**
                      * Allowed options for type=select.
                      * Backend validation rejects any value not in this list.

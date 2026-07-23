@@ -37,15 +37,27 @@ const { toDecimal, toStr, isPositive, multiply, add } = require('../../shared/ut
  * @throws {BusinessRuleError} if inputs are invalid
  */
 const calculateFinalPrice = (basePrice, percentage) => {
-    const base = toDecimal(basePrice);
-    if (base.isNegative()) {
+    if (basePrice === null || basePrice === undefined || basePrice === '') {
         throw new BusinessRuleError(
             'basePrice must be a non-negative number.',
             'INVALID_BASE_PRICE'
         );
     }
-    const pct = Number(percentage);
-    if (!Number.isFinite(pct) || pct < 0) {
+    const base = toDecimal(basePrice);
+    if (!base.isFinite() || base.isNegative()) {
+        throw new BusinessRuleError(
+            'basePrice must be a non-negative number.',
+            'INVALID_BASE_PRICE'
+        );
+    }
+    if (percentage === null || percentage === undefined || percentage === '') {
+        throw new BusinessRuleError(
+            'percentage must be a non-negative number.',
+            'INVALID_PERCENTAGE'
+        );
+    }
+    const pct = toDecimal(percentage);
+    if (!pct.isFinite() || pct.isNegative()) {
         throw new BusinessRuleError(
             'percentage must be a non-negative number.',
             'INVALID_PERCENTAGE'
@@ -53,7 +65,7 @@ const calculateFinalPrice = (basePrice, percentage) => {
     }
 
     // basePrice + basePrice * (percentage / 100)
-    const markup = multiply(basePrice, String(pct / 100));
+    const markup = multiply(basePrice, pct.dividedBy(100).toString());
     return add(basePrice, markup);
 };
 

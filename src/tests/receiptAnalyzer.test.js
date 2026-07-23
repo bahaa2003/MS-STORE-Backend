@@ -45,15 +45,11 @@ const loadAnalyzerService = ({ config = {}, sharpMock, sharpThrows = false } = {
     }));
 
     if (sharpThrows) {
-        jest.doMock(
-            'sharp',
-            () => {
-                throw new Error('MODULE_NOT_FOUND');
-            },
-            { virtual: true }
-        );
+        jest.doMock('sharp', () => {
+            throw new Error('MODULE_NOT_FOUND');
+        });
     } else if (sharpMock) {
-        jest.doMock('sharp', () => sharpMock, { virtual: true });
+        jest.doMock('sharp', () => sharpMock);
     }
 
     return require('../shared/services/receiptAnalyzer.service');

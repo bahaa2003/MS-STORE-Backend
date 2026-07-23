@@ -24,6 +24,10 @@
 
 const { Product, PRICING_MODES, MARKUP_TYPES, computeFinalPrice } = require('./product.model');
 const { ProviderProduct } = require('../providers/providerProduct.model');
+const {
+    XENA_DYNAMIC_PRODUCT_ID,
+} = require('../providers/xena.constants');
+const { mergeXenaProductBehavior } = require('../providers/xena.service');
 const { isPositive, add } = require('../../shared/utils/decimalPrecision');
 const {
     NotFoundError,
@@ -153,7 +157,7 @@ const createProduct = async ({
         resolvedFinalPrice = resolvedBasePrice;
     }
 
-    return Product.create({
+    const productData = {
         name,
         description,
         basePrice: resolvedBasePrice,
@@ -176,7 +180,16 @@ const createProduct = async ({
         provider,
         providerProduct,
         createdBy: adminUserId,
-    });
+    };
+
+    if (providerProduct) {
+        const pp = await ProviderProduct.findById(providerProduct).select('externalProductId').lean();
+        if (pp?.externalProductId === XENA_DYNAMIC_PRODUCT_ID) {
+            mergeXenaProductBehavior(productData);
+        }
+    }
+
+    return Product.create(productData);
 };
 
 
@@ -279,7 +292,7 @@ const publishFromProviderProduct = async ({
         resolvedFinalPrice = resolvedBasePrice;
     }
 
-    return Product.create({
+    const productData = {
         name,
         description,
         basePrice: resolvedBasePrice,
@@ -300,7 +313,13 @@ const publishFromProviderProduct = async ({
         provider: pp.provider._id,
         providerProduct: pp._id,
         createdBy: resolvedCreatedBy,
-    });
+    };
+
+    if (pp.externalProductId === XENA_DYNAMIC_PRODUCT_ID) {
+        mergeXenaProductBehavior(productData);
+    }
+
+    return Product.create(productData);
 };
 
 // =============================================================================
@@ -326,7 +345,7 @@ const publishFromProviderProduct = async ({
  * @returns {Promise<Product>}
  */
 const updateProduct = async (productId, updates) => {
-    const product = await Product.findById(productId).populate('providerProduct', 'rawPrice rawPayload');
+    const product = await Product.findById(productId).populate('providerProduct', 'rawPrice rawPayload externalProductId');
     if (!product) throw new NotFoundError('Product');
 
     const ALLOWED = [
@@ -367,7 +386,7 @@ const updateProduct = async (productId, updates) => {
 
     if (providerLinkChanged) {
         const newPP = await ProviderProduct.findById(incomingProviderProduct)
-            .select('rawPrice rawPayload provider');
+            .select('rawPrice rawPayload provider externalProductId');
         if (newPP) {
             const canonicalRawPrice = String(
                 newPP.rawPrice || newPP.rawPayload?.product_price || 0
@@ -381,6 +400,9 @@ const updateProduct = async (productId, updates) => {
             // Update provider reference to match the new ProviderProduct's provider
             if (newPP.provider) {
                 safe.provider = newPP.provider;
+            }
+            if (newPP.externalProductId === XENA_DYNAMIC_PRODUCT_ID) {
+                mergeXenaProductBehavior(safe);
             }
         }
     }
@@ -447,6 +469,11 @@ const updateProduct = async (productId, updates) => {
     }
     if (safe.pricingMode !== undefined && safe.syncPriceWithProvider === undefined) {
         safe.syncPriceWithProvider = safe.pricingMode === PRICING_MODES.SYNC;
+    }
+
+    const currentLinkedToXena = product.providerProduct?.externalProductId === XENA_DYNAMIC_PRODUCT_ID;
+    if (currentLinkedToXena) {
+        mergeXenaProductBehavior(safe);
     }
 
     Object.assign(product, safe);

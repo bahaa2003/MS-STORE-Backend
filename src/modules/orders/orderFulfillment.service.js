@@ -20,6 +20,7 @@
  */
 
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const { Order, ORDER_STATUS, MAX_RETRY_COUNT, ORDER_EXECUTION_TYPES } = require('../orders/order.model');
 const { getExternalProductId } = require('../products/product.service');
 const { refundWalletAtomic } = require('../wallet/wallet.service');
@@ -34,6 +35,7 @@ const {
 } = require('../audit/audit.constants');
 const { toInternalStatus, isTerminal, requiresRefund } = require('../providers/statusMapper');
 const { notifyOrderCompleted, notifyOrderFailed } = require('../notifications/notification.service');
+const { XENA_PROVIDER_SLUG } = require('../providers/xena.constants');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IDEMPOTENT REFUND
@@ -155,7 +157,7 @@ const refundFailedOrder = async (order) => {
     }
 };
 const { getProviderAdapter } = require('../providers/adapters/adapter.factory');
-const Provider = require('../providers/provider.model');
+const { Provider } = require('../providers/provider.model');
 const { Product } = require('../products/product.model');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -201,6 +203,31 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
         return { order, placed: false, refunded: false };
     }
 
+    const lockOwner = `fulfillment:${process.pid}:${crypto.randomUUID()}`;
+    const lockUntil = new Date(Date.now() + 2 * 60 * 1000);
+    const claimedOrder = await Order.findOneAndUpdate(
+        {
+            _id: orderId,
+            status: ORDER_STATUS.PROCESSING,
+            $or: [
+                { fulfillmentLockUntil: null },
+                { fulfillmentLockUntil: { $exists: false } },
+                { fulfillmentLockUntil: { $lte: new Date() } },
+            ],
+        },
+        {
+            $set: {
+                fulfillmentLockUntil: lockUntil,
+                fulfillmentLockOwner: lockOwner,
+            },
+        },
+        { new: true }
+    );
+
+    if (!claimedOrder) {
+        return { order, placed: false, refunded: false, locked: true };
+    }
+
     const actorId = auditContext?.actorId ?? order.userId;
     const actorRole = auditContext?.actorRole ?? ACTOR_ROLES.SYSTEM;
     const ipAddress = auditContext?.ipAddress ?? null;
@@ -221,7 +248,7 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
             if (!providerDoc.isActive) {
                 throw new Error(`Provider '${providerDoc.name}' is inactive.`);
             }
-            resolvedProvider = getProviderAdapter(providerDoc);
+            resolvedProvider = getProviderAdapter(providerDoc, { strict: true });
         } catch (resolveErr) {
             console.error(`[Fulfillment] Provider resolution failed for order ${orderId}:`, resolveErr.message);
 
@@ -231,6 +258,8 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
                 $set: {
                     status: ORDER_STATUS.FAILED,
                     providerRawResponse: { error: resolveErr.message },
+                    fulfillmentLockUntil: null,
+                    fulfillmentLockOwner: null,
                     failedAt: now,
                     lastCheckedAt: now,
                 },
@@ -283,6 +312,10 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
         result = await resolvedProvider.placeOrder({
             externalProductId: externalProductId ?? String(order.productId._id),
             quantity: order.quantity,
+            orderId: String(order._id),
+            referenceId: String(order._id),
+            clientReference: `order-${order.orderNumber || order._id}`,
+            providerIdempotencyKey: `xena-order-${order._id}`,
             ...mappedCustomerFields,   // ← spread translated customer fields onto params
         });
     } catch (err) {
@@ -330,7 +363,12 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
     let newStatus;
     let refundIssued = false;
 
-    if (!result.success) {
+    const outcomeUncertain = result.outcomeUncertain === true
+        || result.rawResponse?.outcomeUncertain === true;
+
+    if (outcomeUncertain) {
+        newStatus = ORDER_STATUS.PROCESSING;
+    } else if (!result.success) {
         newStatus = ORDER_STATUS.FAILED;
     } else {
         try {
@@ -350,6 +388,12 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
                 providerStatus: result.providerStatus,
                 providerOrderId: result.providerOrderId,
                 providerRawResponse: result.rawResponse,
+                providerOutcome: 'definite',
+                providerErrorCode: result.errorCode ?? result.rawResponse?.code ?? null,
+                providerRequestId: result.requestId ?? result.rawResponse?.requestId ?? null,
+                providerRequestHash: result.requestHash ?? result.rawResponse?.requestHash ?? null,
+                fulfillmentLockUntil: null,
+                fulfillmentLockOwner: null,
                 failedAt: now,
                 lastCheckedAt: now,
             },
@@ -392,12 +436,38 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
     }
 
     if (newStatus === ORDER_STATUS.PROCESSING) {
+        const nextRetry = result.providerOrderId ? order.retryCount : order.retryCount + 1;
+        if (!result.providerOrderId && nextRetry >= MAX_RETRY_COUNT) {
+            await Order.findByIdAndUpdate(orderId, {
+                $set: {
+                    status: ORDER_STATUS.MANUAL_REVIEW,
+                    providerStatus: result.providerStatus,
+                    providerRawResponse: result.rawResponse,
+                    providerOutcome: outcomeUncertain ? 'uncertain' : 'processing',
+                    providerErrorCode: result.errorCode ?? result.rawResponse?.code ?? null,
+                    providerRequestId: result.requestId ?? result.rawResponse?.requestId ?? null,
+                    providerRequestHash: result.requestHash ?? result.rawResponse?.requestHash ?? null,
+                    retryCount: nextRetry,
+                    lastCheckedAt: now,
+                    fulfillmentLockUntil: null,
+                    fulfillmentLockOwner: null,
+                },
+            });
+            return { order: await Order.findById(orderId), placed: false, refunded: false, manualReview: true };
+        }
         // Case B: pending — save providerOrderId, cron will poll
         await Order.findByIdAndUpdate(orderId, {
             $set: {
                 providerOrderId: result.providerOrderId,
                 providerStatus: result.providerStatus,
                 providerRawResponse: result.rawResponse,
+                providerOutcome: outcomeUncertain ? 'uncertain' : 'processing',
+                providerErrorCode: result.errorCode ?? result.rawResponse?.code ?? null,
+                providerRequestId: result.requestId ?? result.rawResponse?.requestId ?? null,
+                providerRequestHash: result.requestHash ?? result.rawResponse?.requestHash ?? null,
+                retryCount: nextRetry,
+                fulfillmentLockUntil: null,
+                fulfillmentLockOwner: null,
                 lastCheckedAt: now,
             },
         });
@@ -424,6 +494,12 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
             providerOrderId: result.providerOrderId,
             providerStatus: result.providerStatus,
             providerRawResponse: result.rawResponse,
+            providerOutcome: 'definite',
+            providerErrorCode: result.errorCode ?? result.rawResponse?.code ?? null,
+            providerRequestId: result.requestId ?? result.rawResponse?.requestId ?? null,
+            providerRequestHash: result.requestHash ?? result.rawResponse?.requestHash ?? null,
+            fulfillmentLockUntil: null,
+            fulfillmentLockOwner: null,
             lastCheckedAt: now,
         },
     });
@@ -463,6 +539,8 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
                 $set: {
                     status: ORDER_STATUS.FAILED,
                     providerRawResponse: { fatalError: fatalErr.message, stack: fatalErr.stack },
+                    fulfillmentLockUntil: null,
+                    fulfillmentLockOwner: null,
                     failedAt: now,
                     lastCheckedAt: now,
                 },
@@ -501,10 +579,50 @@ const processOrderStatusResult = async (order, statusResult) => {
 
     const now = new Date();
     const providerStatus = statusResult.providerStatus;
+    const outcomeUncertain = statusResult.outcomeUncertain === true
+        || statusResult.rawResponse?.outcomeUncertain === true
+        || String(providerStatus ?? '').toLowerCase() === 'unknown';
 
-    if (!isTerminal(providerStatus)) {
+    let terminal = false;
+    if (!outcomeUncertain) {
+        terminal = isTerminal(providerStatus);
+    }
+
+    if (!terminal) {
         // Still pending — bump retry count
         const newRetry = order.retryCount + 1;
+
+        if (newRetry >= MAX_RETRY_COUNT && outcomeUncertain) {
+            await Order.findByIdAndUpdate(order._id, {
+                $set: {
+                    status: ORDER_STATUS.MANUAL_REVIEW,
+                    providerStatus: providerStatus,
+                    providerRawResponse: statusResult.rawResponse,
+                    providerOutcome: 'uncertain',
+                    providerErrorCode: statusResult.errorCode ?? statusResult.rawResponse?.errorCode ?? null,
+                    providerRequestId: statusResult.requestId ?? statusResult.rawResponse?.requestId ?? null,
+                    retryCount: newRetry,
+                    lastCheckedAt: now,
+                },
+            });
+
+            createAuditLog({
+                actorId: order.userId,
+                actorRole: ACTOR_ROLES.SYSTEM,
+                action: PROVIDER_ACTIONS.RETRY_LIMIT_EXCEEDED,
+                entityType: ENTITY_TYPES.ORDER,
+                entityId: order._id,
+                metadata: {
+                    orderId: order._id.toString(),
+                    providerOrderId: order.providerOrderId,
+                    retryCount: newRetry,
+                    outcome: 'uncertain',
+                    reason: 'XENA_UNKNOWN_REQUIRES_MANUAL_REVIEW',
+                },
+            });
+
+            return { action: 'pending' };
+        }
 
         if (newRetry >= MAX_RETRY_COUNT) {
             // Exceeded retry limit → force-fail
@@ -554,6 +672,9 @@ const processOrderStatusResult = async (order, statusResult) => {
             $set: {
                 providerStatus: providerStatus,
                 providerRawResponse: statusResult.rawResponse,
+                providerOutcome: outcomeUncertain ? 'uncertain' : 'processing',
+                providerErrorCode: statusResult.errorCode ?? statusResult.rawResponse?.errorCode ?? null,
+                providerRequestId: statusResult.requestId ?? statusResult.rawResponse?.requestId ?? null,
                 retryCount: newRetry,
                 lastCheckedAt: now,
             },
@@ -777,7 +898,10 @@ const pollProcessingOrders = async (providerOverride = null) => {
     const processingOrders = await Order.find({
         status: ORDER_STATUS.PROCESSING,
         executionType: ORDER_EXECUTION_TYPES.AUTOMATIC,
-        providerOrderId: { $ne: null },
+        $or: [
+            { providerOrderId: { $ne: null } },
+            { providerCode: XENA_PROVIDER_SLUG },
+        ],
     }).sort({ lastCheckedAt: 1 }).limit(200);  // oldest-checked first, cap 200/run
 
     if (!processingOrders.length) return stats;
@@ -854,6 +978,34 @@ const pollProcessingOrders = async (providerOverride = null) => {
     }
 
     stats.checked = healthy.length;
+    const xenaPlacementRetries = healthy.filter((order) =>
+        String(order.providerCode || '').toLowerCase() === XENA_PROVIDER_SLUG
+        && !order.providerOrderId
+    );
+
+    if (xenaPlacementRetries.length) {
+        for (const retryOrder of xenaPlacementRetries) {
+            try {
+                await executeOrder(retryOrder._id);
+                stats.pending++;
+            } catch (err) {
+                stats.errors.push(`[xena-retry:${retryOrder._id}] ${err.message}`);
+            }
+        }
+
+        for (let i = healthy.length - 1; i >= 0; i--) {
+            if (
+                String(healthy[i].providerCode || '').toLowerCase() === XENA_PROVIDER_SLUG
+                && !healthy[i].providerOrderId
+            ) {
+                healthy.splice(i, 1);
+            }
+        }
+    }
+
+    if (!healthy.length) {
+        return stats;
+    }
     console.log(`[FulfillmentCron] Checking ${healthy.length} healthy PROCESSING order(s)…`);
 
 
@@ -933,7 +1085,7 @@ const pollProcessingOrders = async (providerOverride = null) => {
                 continue;
             }
 
-            const adapter = getProviderAdapter(providerDoc);
+            const adapter = getProviderAdapter(providerDoc, { strict: true });
             const ids = orders.map((o) => o.providerOrderId);
 
             // ── Call the provider batch-check endpoint ────────────────────────

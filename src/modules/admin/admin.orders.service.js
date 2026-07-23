@@ -145,7 +145,7 @@ const retryOrder = async (orderId, adminId, auditContext = null) => {
         throw new BusinessRuleError('No provider linked to this order\'s product.', 'NO_PROVIDER');
     }
 
-    const adapter = getProviderAdapter(providerDoc);
+    const adapter = getProviderAdapter(providerDoc, { strict: true });
     const externalProductId = order.providerProductId ?? order.externalProductId;
     if (!externalProductId) {
         throw new BusinessRuleError('Order has no externalProductId — cannot retry.', 'NO_EXTERNAL_ID');
@@ -279,7 +279,7 @@ const syncOrderProviderStatus = async (orderId, adminId, auditContext = null) =>
     const provider = await Provider.findById(providerId);
     if (!provider) throw new NotFoundError('Provider');
 
-    const adapter = getProviderAdapter(provider);
+    const adapter = getProviderAdapter(provider, { strict: true });
 
     let statusResult;
     try {

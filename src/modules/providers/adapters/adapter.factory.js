@@ -33,6 +33,7 @@ const { MockProviderAdapter } = require('./mock.adapter');
 const { RoyalCrownAdapter } = require('./royalCrown.adapter');
 const { TorosfonAdapter } = require('./toros.adapter');
 const { AlkasrVipAdapter } = require('./alkasr.adapter');
+const { XenaRechargeAdapter } = require('./xena.adapter');
 
 // ─── Registry ────────────────────────────────────────────────────────────────
 //
@@ -85,8 +86,32 @@ const registry = new Map([
 
 
     // ── Default test / dev adapter ────────────────────────────────────────────
+    ['xena-recharge', XenaRechargeAdapter],
+    ['xena recharge', XenaRechargeAdapter],
+    ['xenarecharge', XenaRechargeAdapter],
+
     ['mock', MockProviderAdapter],
 ]);
+
+const _isExplicitMockKey = (key) =>
+    key === 'mock'
+    || key.startsWith('mock-')
+    || key.startsWith('test-')
+    || key.endsWith('-mock');
+
+const _resolveAdapterClass = (provider) => {
+    const bySlug = (provider.slug ?? '').toLowerCase().trim();
+    const byName = (provider.name ?? '').toLowerCase().trim();
+
+    const AdapterClass = registry.get(bySlug) ?? registry.get(byName);
+    if (AdapterClass) return AdapterClass;
+
+    if (_isExplicitMockKey(bySlug) || _isExplicitMockKey(byName)) {
+        return MockProviderAdapter;
+    }
+
+    return null;
+};
 
 // ─── Factory ─────────────────────────────────────────────────────────────────
 
@@ -104,12 +129,7 @@ const registry = new Map([
  * @returns {BaseProviderAdapter}
  */
 const getAdapter = (provider, adapterOptions = {}) => {
-    const bySlug = (provider.slug ?? '').toLowerCase().trim();
-    const byName = (provider.name ?? '').toLowerCase().trim();
-
-    const AdapterClass = registry.get(bySlug)
-        ?? registry.get(byName)
-        ?? MockProviderAdapter;
+    const AdapterClass = _resolveAdapterClass(provider) ?? MockProviderAdapter;
 
     return new AdapterClass(provider, adapterOptions);
 };
@@ -129,7 +149,7 @@ const getProviderAdapter = (provider, options = {}) => {
     const bySlug = (provider.slug ?? '').toLowerCase().trim();
     const byName = (provider.name ?? '').toLowerCase().trim();
 
-    const AdapterClass = registry.get(bySlug) ?? registry.get(byName);
+    const AdapterClass = _resolveAdapterClass(provider);
 
     if (!AdapterClass) {
         if (options.strict) {

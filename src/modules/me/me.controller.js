@@ -14,7 +14,9 @@ const depositService = require('../deposits/deposit.service');
 const productService = require('../products/product.service');
 const { sendSuccess, sendCreated, sendPaginated } = require('../../shared/utils/apiResponse');
 const catchAsync = require('../../shared/utils/catchAsync');
-const { NotFoundError } = require('../../shared/errors/AppError');
+const { NotFoundError, BusinessRuleError } = require('../../shared/errors/AppError');
+const xenaSvc = require('../providers/xena.service');
+const { XENA_DYNAMIC_PRODUCT_ID } = require('../providers/xena.constants');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -289,6 +291,37 @@ const getProduct = catchAsync(async (req, res) => {
     });
 });
 
+const verifyProductTarget = catchAsync(async (req, res) => {
+    const { Product } = require('../products/product.model');
+    const product = await Product.findOne({ _id: req.params.id, isActive: true, deletedAt: null })
+        .populate('provider', 'name slug isActive xenaConfig apiToken apiKey baseUrl')
+        .populate('providerProduct', 'externalProductId')
+        .lean({ virtuals: false });
+
+    if (!product) throw new NotFoundError('Product');
+    if (product.providerProduct?.externalProductId !== XENA_DYNAMIC_PRODUCT_ID) {
+        throw new BusinessRuleError('This product does not support Xena target verification.', 'NOT_XENA_PRODUCT');
+    }
+    if (!product.provider || product.provider.isActive !== true) {
+        throw new BusinessRuleError('Provider is inactive.', 'PROVIDER_INACTIVE');
+    }
+
+    const provider = await require('../providers/provider.model').Provider.findById(product.provider._id);
+    const result = await xenaSvc.verifyTargetForProduct({
+        product,
+        provider,
+        targetUid: req.body.targetUid,
+        auditContext: {
+            actorId: req.user._id,
+            actorRole: 'CUSTOMER',
+            ipAddress: req.ip ?? null,
+            userAgent: req.get('User-Agent') ?? null,
+        },
+    });
+
+    sendSuccess(res, result, 'Target verified.');
+});
+
 // =============================================================================
 // DEPOSITS  —  POST /api/me/deposits  |  GET /api/me/deposits  |  GET /api/me/deposits/:id
 // =============================================================================
@@ -391,6 +424,7 @@ module.exports = {
     placeOrder,
     getProducts,
     getProduct,
+    verifyProductTarget,
     createDeposit,
     getDeposits,
     getDeposit,

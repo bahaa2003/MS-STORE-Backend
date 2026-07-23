@@ -121,6 +121,10 @@ const SAMPLE_DTO = {
     rawPayload: { id: 'EXT-001', price: 50.00 },
 };
 
+const expectMoney = (actual, expected) => {
+    expect(String(actual)).toBe(String(expected));
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // [1] Provider Model
 // ─────────────────────────────────────────────────────────────────────────────
@@ -175,7 +179,7 @@ describe('[2] ProviderProduct Model', () => {
     it('creates a valid ProviderProduct', async () => {
         const pp = await ProviderProduct.create({ provider: provider._id, ...SAMPLE_DTO });
         expect(pp._id).toBeDefined();
-        expect(pp.rawPrice).toBe(50.00);
+        expectMoney(pp.rawPrice, '50');
         expect(pp.minQty).toBe(1);
     });
 
@@ -241,8 +245,8 @@ describe('[3] Adapter Layer', () => {
         dtos.forEach((dto) => {
             expect(dto.externalProductId).toBeDefined();
             expect(dto.rawName).toBeDefined();
-            expect(typeof dto.rawPrice).toBe('number');
-            expect(dto.rawPrice).toBeGreaterThanOrEqual(0);
+            expect(typeof dto.rawPrice).toBe('string');
+            expect(Number(dto.rawPrice)).toBeGreaterThanOrEqual(0);
         });
     });
 
@@ -252,7 +256,7 @@ describe('[3] Adapter Layer', () => {
         const dtos = await adapter.fetchProducts();
         expect(dtos).toHaveLength(1);
         expect(dtos[0].externalProductId).toBe('X1');
-        expect(dtos[0].rawPrice).toBe(9.99);
+        expectMoney(dtos[0].rawPrice, '9.99');
     });
 
     it('MockProviderAdapter propagates injected error', async () => {
@@ -342,7 +346,7 @@ describe('[4] Sync Engine — syncProvider()', () => {
         await syncService.syncProvider(provider._id, { products: PRODUCTS_V2 });
 
         const p1 = await ProviderProduct.findOne({ provider: provider._id, externalProductId: 'P1' });
-        expect(p1.rawPrice).toBe(15.00);
+        expectMoney(p1.rawPrice, '15');
         expect(p1.minQty).toBe(3);
         expect(p1.maxQty).toBe(50);
         expect(p1.isActive).toBe(false);
@@ -432,7 +436,7 @@ describe('[5] Price Sync Logic', () => {
             pricingMode: PRICING_MODES.SYNC,
         });
 
-        expect(product.basePrice).toBe(100.00);
+        expectMoney(product.basePrice, '100');
 
         // Resync with new price
         await syncService.syncProvider(provider._id, {
@@ -440,7 +444,7 @@ describe('[5] Price Sync Logic', () => {
         });
 
         const updated = await Product.findById(product._id);
-        expect(updated.basePrice).toBe(150.00);
+        expectMoney(updated.basePrice, '150');
     });
 
     it('"manual" mode Product.basePrice NOT updated when rawPrice changes', async () => {
@@ -452,7 +456,7 @@ describe('[5] Price Sync Logic', () => {
             pricingMode: PRICING_MODES.MANUAL,
         });
 
-        expect(product.basePrice).toBe(200.00);
+        expectMoney(product.basePrice, '200');
 
         // Resync with a different price
         await syncService.syncProvider(provider._id, {
@@ -460,7 +464,7 @@ describe('[5] Price Sync Logic', () => {
         });
 
         const unchanged = await Product.findById(product._id);
-        expect(unchanged.basePrice).toBe(200.00);  // admin price preserved
+        expectMoney(unchanged.basePrice, '200');  // admin price preserved
     });
 
     it('multiple "sync" mode Products all receive the updated price', async () => {
@@ -494,8 +498,8 @@ describe('[5] Price Sync Logic', () => {
 
         const updA = await Product.findById(productA._id);
         const updB = await Product.findById(productB._id);
-        expect(updA.basePrice).toBe(75.00);
-        expect(updB.basePrice).toBe(80.00);
+        expectMoney(updA.basePrice, '75');
+        expectMoney(updB.basePrice, '80');
     });
 
     it('recalcSyncPrices immediately aligns price without a full sync', async () => {
@@ -511,7 +515,7 @@ describe('[5] Price Sync Logic', () => {
         expect(modifiedCount).toBe(1);
 
         const updated = await Product.findById(product._id);
-        expect(updated.basePrice).toBe(222.00);
+        expectMoney(updated.basePrice, '222');
     });
 
     it('pricesSynced count reflects actual Product.basePrice modifications', async () => {
@@ -543,7 +547,7 @@ describe('[5] Price Sync Logic', () => {
 
         // Price is still 100 — correct regardless of whether modifiedCount is 0 or 1
         const product = await Product.findOne({ providerProduct: providerProduct._id });
-        expect(product.basePrice).toBe(100.00);
+        expectMoney(product.basePrice, '100');
         // pricesSynced is defined and is a number
         expect(typeof result.pricesSynced).toBe('number');
         expect(result.pricesSynced).toBeGreaterThanOrEqual(0);
@@ -577,7 +581,7 @@ describe('[6] Admin Publish Flow', () => {
         expect(product._id).toBeDefined();
         expect(product.provider.toString()).toBe(provider._id.toString());
         expect(product.providerProduct.toString()).toBe(providerProduct._id.toString());
-        expect(product.basePrice).toBe(45.00);
+        expectMoney(product.basePrice, '45');
         expect(product.pricingMode).toBe(PRICING_MODES.MANUAL);
     });
 
@@ -603,7 +607,7 @@ describe('[6] Admin Publish Flow', () => {
             pricingMode: PRICING_MODES.SYNC,
         });
 
-        expect(product.basePrice).toBe(40.00);   // rawPrice wins
+        expectMoney(product.basePrice, '40');   // rawPrice wins
     });
 
     it('pricingMode=manual uses the admin-supplied basePrice', async () => {
@@ -614,7 +618,7 @@ describe('[6] Admin Publish Flow', () => {
             pricingMode: PRICING_MODES.MANUAL,
         });
 
-        expect(product.basePrice).toBe(55.00);
+        expectMoney(product.basePrice, '55');
     });
 
     it('publishProduct pre-fills minQty/maxQty from raw data when not overridden', async () => {
@@ -634,14 +638,14 @@ describe('[6] Admin Publish Flow', () => {
             name: 'Switch Test', basePrice: 200.00, pricingMode: PRICING_MODES.MANUAL,
         });
 
-        expect(product.basePrice).toBe(200.00);
+        expectMoney(product.basePrice, '200');
 
         const updated = await providerService.updatePublishedProduct(product._id, {
             pricingMode: PRICING_MODES.SYNC,
         });
 
         // rawPrice is 40.00 — should snap immediately
-        expect(updated.basePrice).toBe(40.00);
+        expectMoney(updated.basePrice, '40');
         expect(updated.pricingMode).toBe(PRICING_MODES.SYNC);
     });
 
@@ -656,7 +660,7 @@ describe('[6] Admin Publish Flow', () => {
             basePrice: 77.00,
         });
 
-        expect(updated.basePrice).toBe(77.00);
+        expectMoney(updated.basePrice, '77');
         expect(updated.pricingMode).toBe(PRICING_MODES.MANUAL);
     });
 
@@ -715,8 +719,8 @@ describe('[7] Order Price Isolation', () => {
             quantity: 1,
         });
 
-        expect(order.basePriceSnapshot).toBe(75.00);
-        expect(order.totalPrice).toBe(75.00);
+        expectMoney(order.basePriceSnapshot, '75');
+        expectMoney(order.totalPrice, '75');
     });
 
     it('"manual" pricingMode: changing rawPrice does NOT affect Product.basePrice', async () => {
@@ -731,7 +735,7 @@ describe('[7] Order Price Isolation', () => {
         });
 
         const unchanged = await Product.findById(product._id);
-        expect(unchanged.basePrice).toBe(75.00);
+        expectMoney(unchanged.basePrice, '75');
     });
 
     it('"sync" pricingMode: changing rawPrice DOES update Product.basePrice', async () => {
@@ -745,7 +749,7 @@ describe('[7] Order Price Isolation', () => {
         });
 
         const updated = await Product.findById(product._id);
-        expect(updated.basePrice).toBe(120.00);
+        expectMoney(updated.basePrice, '120');
     });
 
     it('existing order price snapshots are immutable even when rawPrice changes', async () => {
@@ -760,8 +764,8 @@ describe('[7] Order Price Isolation', () => {
             quantity: 2,
         });
 
-        expect(order.basePriceSnapshot).toBe(100.00);
-        expect(order.totalPrice).toBe(200.00);
+        expectMoney(order.basePriceSnapshot, '100');
+        expectMoney(order.totalPrice, '200');
 
         // Sync with new price — Product.basePrice changes
         await syncService.syncProvider(provider._id, {
@@ -770,8 +774,8 @@ describe('[7] Order Price Isolation', () => {
 
         // Reload the ORDER — its snapshots must be unchanged
         const reloaded = await Order.findById(order._id);
-        expect(reloaded.basePriceSnapshot).toBe(100.00);
-        expect(reloaded.totalPrice).toBe(200.00);
+        expectMoney(reloaded.basePriceSnapshot, '100');
+        expectMoney(reloaded.totalPrice, '200');
     });
 });
 

@@ -80,9 +80,9 @@ describe('Order within wallet balance', () => {
         const { order } = await placeOrder({ userId: customer._id, productId: product._id, quantity: 2 });
 
         // Order assertions
-        expect(order.totalPrice).toBe(100);
+        expect(order.totalPrice).toBe('100');
         expect(order.walletDeducted).toBe(100);
-        expect(order.creditUsedAmount).toBe(0);  // always 0 — credit system removed
+        expect(order.creditUsedAmount).toBe('0');  // always 0 — credit system removed
         expect(order.status).toBe('PENDING');
 
         // User balance assertions

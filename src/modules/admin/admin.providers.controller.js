@@ -5,8 +5,16 @@
  */
 
 const svc = require('./admin.providers.service');
+const xenaSvc = require('../providers/xena.service');
 const catchAsync = require('../../shared/utils/catchAsync');
 const { sendSuccess, sendCreated, sendPaginated } = require('../../shared/utils/apiResponse');
+
+const auditContext = (req) => ({
+    actorId: req.user?._id,
+    actorRole: String(req.user?.role || 'ADMIN').toUpperCase(),
+    ipAddress: req.ip ?? null,
+    userAgent: req.get('User-Agent') ?? null,
+});
 
 // GET /admin/providers
 const listProviders = catchAsync(async (req, res) => {
@@ -76,6 +84,26 @@ const checkProviderOrder = catchAsync(async (req, res) => {
     sendSuccess(res, data, 'Order status retrieved');
 });
 
+const challengeXenaConnection = catchAsync(async (req, res) => {
+    const data = await xenaSvc.challengeConnection(req.params.id, req.body, auditContext(req));
+    sendSuccess(res, data, 'Xena verification challenge requested');
+});
+
+const verifyXenaConnection = catchAsync(async (req, res) => {
+    const data = await xenaSvc.verifyConnection(req.params.id, req.body, auditContext(req));
+    sendSuccess(res, data, 'Xena connection verified');
+});
+
+const getXenaConnection = catchAsync(async (req, res) => {
+    const data = await xenaSvc.refreshConnection(req.params.id, auditContext(req));
+    sendSuccess(res, { connection: data }, 'Xena connection retrieved');
+});
+
+const updateXenaProductConfig = catchAsync(async (req, res) => {
+    const data = await xenaSvc.updateProductConfig(req.params.id, req.body, auditContext(req));
+    sendSuccess(res, { product: data }, 'Xena product configuration updated');
+});
+
 module.exports = {
     listProviders,
     getProviderById,
@@ -88,4 +116,8 @@ module.exports = {
     testProviderConnection,
     getProductPrice,
     checkProviderOrder,
+    challengeXenaConnection,
+    verifyXenaConnection,
+    getXenaConnection,
+    updateXenaProductConfig,
 };

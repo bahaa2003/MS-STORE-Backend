@@ -200,7 +200,6 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
      * @returns {Promise<PlaceOrderResult>}
      */
     async placeOrder(params) {
-        console.log("[ALKASR INPUT PARAMS]", JSON.stringify(params, null, 2));
         const productId = params.productId ?? params.externalProductId;
         const amount = params.amount ?? params.quantity;
 
@@ -229,25 +228,17 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
 
         const orderUuid = crypto.randomUUID();
 
-    try {
-        console.log("[ALKASR FINAL REQUEST]", {
-            productId,
-            amount,
-            playerId,
-            orderUuid,
-            endpoint: `/client/api/newOrder/${encodeURIComponent(productId)}/params`,
-    });
-
-    const { data } = await this._client.get(
-        `/client/api/newOrder/${encodeURIComponent(productId)}/params`,
-        {
-            params: {
-                qty: amount,
-                playerId,
-                order_uuid: orderUuid,
-            },
-        }
-    );
+        try {
+            const { data } = await this._client.get(
+                `/client/api/newOrder/${encodeURIComponent(productId)}/params`,
+                {
+                    params: {
+                        qty: amount,
+                        playerId,
+                        order_uuid: orderUuid,
+                    },
+                }
+            );
 
             // Check for explicit API-level failure
             const topStatus = String(data.status ?? '').toUpperCase();
@@ -263,6 +254,17 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
 
             // Extract order ID from data.order_id
             const innerData = data.data ?? data;
+            const normalisedStatus = _normaliseAlkasrStatus(innerData.status ?? data.status);
+            if (normalisedStatus === 'Cancelled') {
+                return {
+                    success: false,
+                    providerOrderId: null,
+                    providerStatus: 'Cancelled',
+                    rawResponse: data,
+                    errorMessage: data.message ?? data.error ?? data.msg ?? innerData.message ?? innerData.error ?? innerData.msg ?? 'AlkasrVip rejected the order',
+                };
+            }
+
             const providerOrderId = innerData.order_id ?? innerData.id ?? innerData.orderId ?? null;
 
             if (!providerOrderId) {
@@ -278,7 +280,7 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
             return {
                 success: true,
                 providerOrderId: String(providerOrderId),
-                providerStatus: _normaliseAlkasrStatus(innerData.status ?? data.status),
+                providerStatus: normalisedStatus,
                 rawResponse: data,
                 errorMessage: null,
             };
@@ -352,7 +354,7 @@ class AlkasrVipAdapter extends BaseProviderAdapter {
             }));
         }
 
-        const list = data.data ?? data;
+        const list = data.orders ?? data.data ?? data;
         if (Array.isArray(list)) {
             return list.map((item) => ({
                 providerOrderId: String(item.order_id ?? item.id),

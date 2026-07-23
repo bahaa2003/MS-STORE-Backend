@@ -10,6 +10,8 @@ const { debitWalletAtomic, refundWalletAtomic } = require('../wallet/wallet.serv
 const { calculateUserPrice } = require('./pricing.service');
 const { getProviderAdapter } = require('../providers/adapters/adapter.factory');
 const { validateOrderFields } = require('./orderFields.validator');
+const xenaSvc = require('../providers/xena.service');
+const { XENA_DYNAMIC_PRODUCT_ID, XENA_TARGET_FIELD_KEY } = require('../providers/xena.constants');
 const {
     NotFoundError,
     BusinessRuleError,
@@ -446,7 +448,7 @@ const createOrder = async ({
                 }
 
                 if (providerDoc?.isActive) {
-                    resolvedProvider = getProviderAdapter(providerDoc);
+                    resolvedProvider = getProviderAdapter(providerDoc, { strict: true });
                 } else {
                     console.warn(`[Order] Provider ${prod.provider._id} is INACTIVE — fulfillment will self-resolve.`);
                 }
@@ -570,6 +572,30 @@ const _attemptCreateOrder = async (
         // proceeds with the cached DB price.  A transient outage should NOT
         // block legitimate orders.
         //
+        if (product.provider && product.providerProduct) {
+            const xenaProviderProduct = await ProviderProduct.findById(product.providerProduct)
+                .select('externalProductId')
+                .lean();
+
+            if (xenaProviderProduct?.externalProductId === XENA_DYNAMIC_PRODUCT_ID) {
+                const providerDoc = await Provider.findById(product.provider);
+                if (!providerDoc) throw new NotFoundError('Provider');
+                if (!providerDoc.isActive) {
+                    throw new BusinessRuleError('Provider is inactive.', 'PROVIDER_INACTIVE');
+                }
+
+                await xenaSvc.verifyTargetForProduct({
+                    product,
+                    provider: providerDoc,
+                    targetUid: customerInput?.values?.[XENA_TARGET_FIELD_KEY],
+                    auditContext: auditContext ?? {
+                        actorId: userId,
+                        actorRole: ACTOR_ROLES.CUSTOMER,
+                    },
+                });
+            }
+        }
+
         if (product.provider && product.providerProduct && provider) {
             try {
                 // Look up the externalProductId from the linked ProviderProduct

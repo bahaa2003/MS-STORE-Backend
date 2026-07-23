@@ -54,6 +54,7 @@ afterEach(() => {
 const { TorosfonAdapter } = require('../modules/providers/adapters/toros.adapter');
 const { AlkasrVipAdapter } = require('../modules/providers/adapters/alkasr.adapter');
 const { RoyalCrownAdapter } = require('../modules/providers/adapters/royalCrown.adapter');
+const { XenaRechargeAdapter } = require('../modules/providers/adapters/xena.adapter');
 const { getProviderAdapter, registerAdapter } = require('../modules/providers/adapters/adapter.factory');
 const { toInternalStatus, isTerminal, requiresRefund } = require('../modules/providers/statusMapper');
 
@@ -78,6 +79,33 @@ const royalProvider = {
     slug: 'royal-crown',
     baseUrl: 'https://royal.example.com',
     apiToken: 'royal-secret',
+};
+
+const xenaProvider = {
+    name: 'Xena Recharge',
+    slug: 'xena-recharge',
+    baseUrl: 'https://api.digiteech.me',
+    apiToken: 'xena-secret',
+    xenaConfig: {
+        connectionId: 'con_123',
+        connectionStatus: 'connected',
+        product: {
+            externalProductId: 'xena-dynamic-recharge',
+            name: 'Xena Dynamic Recharge (Any Amount)',
+            unitPrice: '0.02',
+            minAmount: 100,
+            maxAmount: 100000,
+            isActive: true,
+        },
+    },
+};
+
+const makeXenaAdapter = (clientOverrides = {}, providerOverrides = {}) => {
+    const client = makeFakeAxios(clientOverrides);
+    axios.create.mockReturnValueOnce(client);
+    const adapter = new XenaRechargeAdapter({ ...xenaProvider, ...providerOverrides });
+    adapter._client = client;
+    return { adapter, client };
 };
 
 // Helper: build adapter with a controlled axios client
@@ -116,7 +144,7 @@ describe('[1] TorosfonAdapter — getProducts()', () => {
         expect(products[0]).toMatchObject({
             externalProductId: 'T1',
             rawName: 'Widget',
-            rawPrice: 5.5,
+            rawPrice: '5.5',
             minQty: 1,
             maxQty: 100,
             isActive: true,
@@ -146,11 +174,11 @@ describe('[1] TorosfonAdapter — getProducts()', () => {
         expect(products[0].externalProductId).toBe('TP1');
     });
 
-    it('getProducts() calls /api/products', async () => {
+    it('getProducts() calls /api/AllProducts', async () => {
         const { adapter, client } = makeTorosAdapter();
         client.get.mockResolvedValueOnce({ data: [] });
         await adapter.getProducts();
-        expect(client.get).toHaveBeenCalledWith('/api/products');
+        expect(client.get).toHaveBeenCalledWith('/api/AllProducts');
     });
 });
 
@@ -161,7 +189,7 @@ describe('[1] TorosfonAdapter — getProducts()', () => {
 describe('[2] TorosfonAdapter — placeOrder()', () => {
     it('returns success result when provider responds with id and status=processing', async () => {
         const { adapter, client } = makeTorosAdapter();
-        client.post.mockResolvedValueOnce({
+        client.get.mockResolvedValueOnce({
             data: { id: 500, status: 'processing', product_id: 'T1', quantity: 2 },
         });
 
@@ -180,7 +208,7 @@ describe('[2] TorosfonAdapter — placeOrder()', () => {
 
     it('returns success=true and Completed when status=completed', async () => {
         const { adapter, client } = makeTorosAdapter();
-        client.post.mockResolvedValueOnce({ data: { id: 501, status: 'completed' } });
+        client.get.mockResolvedValueOnce({ data: { id: 501, status: 'completed' } });
         const result = await adapter.placeOrder({ productId: 'T1', amount: 1 });
         expect(result.success).toBe(true);
         expect(result.providerStatus).toBe('Completed');
@@ -188,7 +216,7 @@ describe('[2] TorosfonAdapter — placeOrder()', () => {
 
     it('accepts legacy externalProductId + quantity aliases', async () => {
         const { adapter, client } = makeTorosAdapter();
-        client.post.mockResolvedValueOnce({ data: { id: 502, status: 'pending' } });
+        client.get.mockResolvedValueOnce({ data: { id: 502, status: 'pending' } });
         const result = await adapter.placeOrder({ externalProductId: 'T99', quantity: 3 });
         expect(result.success).toBe(true);
         expect(result.providerOrderId).toBe(502);
@@ -196,7 +224,7 @@ describe('[2] TorosfonAdapter — placeOrder()', () => {
 
     it('returns success=false when provider responds with success:false', async () => {
         const { adapter, client } = makeTorosAdapter();
-        client.post.mockResolvedValueOnce({
+        client.get.mockResolvedValueOnce({
             data: { success: false, message: 'Out of stock' },
         });
         const result = await adapter.placeOrder({ productId: 'T1', amount: 1 });
@@ -207,7 +235,7 @@ describe('[2] TorosfonAdapter — placeOrder()', () => {
 
     it('returns success=false when provider returns no order id', async () => {
         const { adapter, client } = makeTorosAdapter();
-        client.post.mockResolvedValueOnce({ data: { status: 'success' } });   // no id
+        client.get.mockResolvedValueOnce({ data: { status: 'success' } });   // no id
         const result = await adapter.placeOrder({ productId: 'T1', amount: 1 });
         expect(result.success).toBe(false);
         expect(result.errorMessage).toMatch(/no order id/i);
@@ -217,15 +245,15 @@ describe('[2] TorosfonAdapter — placeOrder()', () => {
         const { adapter, client } = makeTorosAdapter();
         const networkErr = new Error('ECONNREFUSED');
         networkErr.providerBody = null;
-        client.post.mockRejectedValueOnce(networkErr);
+        client.get.mockRejectedValueOnce(networkErr);
         const result = await adapter.placeOrder({ productId: 'T1', amount: 1 });
         expect(result.success).toBe(false);
         expect(result.errorMessage).toMatch(/ECONNREFUSED/);
     });
 
-    it('sends correct POST body to /api/orders', async () => {
+    it('sends correct GET request to /api/PlaceOrder/{productId}/data', async () => {
         const { adapter, client } = makeTorosAdapter();
-        client.post.mockResolvedValueOnce({ data: { id: 505, status: 'pending' } });
+        client.get.mockResolvedValueOnce({ data: { id: 505, status: 'pending' } });
         await adapter.placeOrder({
             productId: 'T2',
             amount: 5,
@@ -233,11 +261,12 @@ describe('[2] TorosfonAdapter — placeOrder()', () => {
             referenceId: 'ref-xyz',
         });
 
-        expect(client.post).toHaveBeenCalledWith('/api/orders', {
-            product_id: 'T2',
-            quantity: 5,
-            player_id: 'player99',
-            reference_id: 'ref-xyz',
+        expect(client.get).toHaveBeenCalledWith('/api/PlaceOrder/T2/data', {
+            params: {
+                amount: 5,
+                player_Id: 'player99',
+                referenceId: 'ref-xyz',
+            },
         });
     });
 });
@@ -253,7 +282,7 @@ describe('[3] TorosfonAdapter — checkOrder() / checkOrders()', () => {
         const result = await adapter.checkOrder(600);
         expect(result.providerOrderId).toBe(600);
         expect(result.providerStatus).toBe('Completed');
-        expect(client.get).toHaveBeenCalledWith('/api/orders/600');
+        expect(client.get).toHaveBeenCalledWith('/api/CheckOrder', { params: { order_id: 600 } });
     });
 
     it('checkOrder() maps toros "failed" → Cancelled', async () => {
@@ -265,18 +294,18 @@ describe('[3] TorosfonAdapter — checkOrder() / checkOrders()', () => {
 
     it('checkOrders() POSTs to /api/orders/batch-status and returns array', async () => {
         const { adapter, client } = makeTorosAdapter();
-        client.post.mockResolvedValueOnce({
-            data: [
-                { id: 700, status: 'completed' },
-                { id: 701, status: 'processing' },
-            ],
+        client.get.mockResolvedValueOnce({
+            data: {
+                700: { status: 'completed' },
+                701: { status: 'processing' },
+            },
         });
 
         const results = await adapter.checkOrders([700, 701]);
         expect(results).toHaveLength(2);
         expect(results[0]).toMatchObject({ providerOrderId: 700, providerStatus: 'Completed' });
         expect(results[1]).toMatchObject({ providerOrderId: 701, providerStatus: 'Pending' });
-        expect(client.post).toHaveBeenCalledWith('/api/orders/batch-status', { order_ids: [700, 701] });
+        expect(client.get).toHaveBeenCalledWith('/api/CheckListOrders', { params: { orders: JSON.stringify([700, 701]) } });
     });
 
     it('checkOrders() returns [] for empty input', async () => {
@@ -287,7 +316,7 @@ describe('[3] TorosfonAdapter — checkOrder() / checkOrders()', () => {
 
     it('checkOrders() unwraps { orders: [...] } envelope', async () => {
         const { adapter, client } = makeTorosAdapter();
-        client.post.mockResolvedValueOnce({
+        client.get.mockResolvedValueOnce({
             data: { orders: [{ id: 800, status: 'done' }] },
         });
         const results = await adapter.checkOrders([800]);
@@ -321,7 +350,7 @@ describe('[4] AlkasrVipAdapter — getProducts()', () => {
         expect(products[0]).toMatchObject({
             externalProductId: 'A1',
             rawName: 'Alkasr Package',
-            rawPrice: 7.25,
+            rawPrice: '7.25',
             minQty: 1,
             maxQty: 200,
             isActive: true,
@@ -337,11 +366,11 @@ describe('[4] AlkasrVipAdapter — getProducts()', () => {
         expect(products[0].externalProductId).toBe('A2');
     });
 
-    it('calls GET /services', async () => {
+    it('calls GET /client/api/products', async () => {
         const { adapter, client } = makeAlkasrAdapter();
         client.get.mockResolvedValueOnce({ data: [] });
         await adapter.getProducts();
-        expect(client.get).toHaveBeenCalledWith('/services');
+        expect(client.get).toHaveBeenCalledWith('/client/api/products');
     });
 });
 
@@ -352,7 +381,7 @@ describe('[4] AlkasrVipAdapter — getProducts()', () => {
 describe('[5] AlkasrVipAdapter — placeOrder()', () => {
     it('returns success=true when Alkasr status=wait (→ Pending / still processing)', async () => {
         const { adapter, client } = makeAlkasrAdapter();
-        client.post.mockResolvedValueOnce({
+        client.get.mockResolvedValueOnce({
             data: { order_id: 1001, status: 'wait' },
         });
 
@@ -364,22 +393,22 @@ describe('[5] AlkasrVipAdapter — placeOrder()', () => {
         });
 
         expect(result.success).toBe(true);
-        expect(result.providerOrderId).toBe(1001);
+        expect(result.providerOrderId).toBe('1001');
         expect(result.providerStatus).toBe('Pending');   // wait → Pending
         expect(result.errorMessage).toBeNull();
     });
 
     it('returns success=true when Alkasr status=accept (→ Completed)', async () => {
         const { adapter, client } = makeAlkasrAdapter();
-        client.post.mockResolvedValueOnce({ data: { order_id: 1002, status: 'accept' } });
-        const result = await adapter.placeOrder({ productId: 'A1', amount: 1 });
+        client.get.mockResolvedValueOnce({ data: { order_id: 1002, status: 'accept' } });
+        const result = await adapter.placeOrder({ productId: 'A1', amount: 1, playerId: 'uid123' });
         expect(result.success).toBe(true);
         expect(result.providerStatus).toBe('Completed');
     });
 
     it('returns success=false when Alkasr status=reject', async () => {
         const { adapter, client } = makeAlkasrAdapter();
-        client.post.mockResolvedValueOnce({
+        client.get.mockResolvedValueOnce({
             data: { status: 'reject', message: 'Invalid uid' },
         });
         const result = await adapter.placeOrder({ productId: 'A1', amount: 1, playerId: 'bad' });
@@ -390,8 +419,8 @@ describe('[5] AlkasrVipAdapter — placeOrder()', () => {
 
     it('returns success=false when order_id is absent from response', async () => {
         const { adapter, client } = makeAlkasrAdapter();
-        client.post.mockResolvedValueOnce({ data: { status: 'wait' } });   // no order_id
-        const result = await adapter.placeOrder({ productId: 'A1', amount: 1 });
+        client.get.mockResolvedValueOnce({ data: { status: 'wait' } });   // no order_id
+        const result = await adapter.placeOrder({ productId: 'A1', amount: 1, playerId: 'uid123' });
         expect(result.success).toBe(false);
         expect(result.errorMessage).toMatch(/no order id/i);
     });
@@ -400,15 +429,15 @@ describe('[5] AlkasrVipAdapter — placeOrder()', () => {
         const { adapter, client } = makeAlkasrAdapter();
         const err = new Error('Timeout');
         err.providerBody = null;
-        client.post.mockRejectedValueOnce(err);
-        const result = await adapter.placeOrder({ productId: 'A1', amount: 1 });
+        client.get.mockRejectedValueOnce(err);
+        const result = await adapter.placeOrder({ productId: 'A1', amount: 1, playerId: 'uid123' });
         expect(result.success).toBe(false);
         expect(result.errorMessage).toMatch(/Timeout/);
     });
 
-    it('sends correct POST body to /order/create', async () => {
+    it('sends correct GET params to /client/api/newOrder/{productId}/params', async () => {
         const { adapter, client } = makeAlkasrAdapter();
-        client.post.mockResolvedValueOnce({ data: { order_id: 1005, status: 'wait' } });
+        client.get.mockResolvedValueOnce({ data: { order_id: 1005, status: 'wait' } });
 
         await adapter.placeOrder({
             productId: 'A3',
@@ -417,21 +446,21 @@ describe('[5] AlkasrVipAdapter — placeOrder()', () => {
             referenceId: 'ref-7',
         });
 
-        expect(client.post).toHaveBeenCalledWith('/order/create', {
-            service_id: 'A3',
-            qty: 7,
-            uid: 'uid555',
-            ref: 'ref-7',
+        expect(client.get).toHaveBeenCalledWith('/client/api/newOrder/A3/params', {
+            params: {
+                qty: 7,
+                playerId: 'uid555',
+                order_uuid: expect.any(String),
+            },
         });
     });
 
-    it('does not include uid/ref when playerId/referenceId are absent', async () => {
+    it('requires playerId mapping before calling provider', async () => {
         const { adapter, client } = makeAlkasrAdapter();
-        client.post.mockResolvedValueOnce({ data: { order_id: 1006, status: 'wait' } });
-        await adapter.placeOrder({ productId: 'A4', amount: 2 });
-        const body = client.post.mock.calls[0][1];
-        expect(body).not.toHaveProperty('uid');
-        expect(body).not.toHaveProperty('ref');
+        const result = await adapter.placeOrder({ productId: 'A4', amount: 2 });
+        expect(result.success).toBe(false);
+        expect(result.errorMessage).toMatch(/Missing Alkasr Player ID mapping/);
+        expect(client.get).not.toHaveBeenCalled();
     });
 });
 
@@ -444,9 +473,9 @@ describe('[6] AlkasrVipAdapter — checkOrder() / checkOrders()', () => {
         const { adapter, client } = makeAlkasrAdapter();
         client.get.mockResolvedValueOnce({ data: { order_id: 2001, status: 'accepted' } });
         const result = await adapter.checkOrder(2001);
-        expect(result.providerOrderId).toBe(2001);
+        expect(result.providerOrderId).toBe('2001');
         expect(result.providerStatus).toBe('Completed');
-        expect(client.get).toHaveBeenCalledWith('/order/status', { params: { order_id: 2001 } });
+        expect(client.get).toHaveBeenCalledWith('/client/api/check', { params: { orders: JSON.stringify([2001]) } });
     });
 
     it('checkOrder() maps "waiting" → Pending', async () => {
@@ -463,9 +492,9 @@ describe('[6] AlkasrVipAdapter — checkOrder() / checkOrders()', () => {
         expect(result.providerStatus).toBe('Cancelled');
     });
 
-    it('checkOrders() POSTs to /order/status/bulk', async () => {
+    it('checkOrders() calls /client/api/check with order array', async () => {
         const { adapter, client } = makeAlkasrAdapter();
-        client.post.mockResolvedValueOnce({
+        client.get.mockResolvedValueOnce({
             data: {
                 orders: [
                     { order_id: 3001, status: 'accept' },
@@ -475,9 +504,9 @@ describe('[6] AlkasrVipAdapter — checkOrder() / checkOrders()', () => {
         });
         const results = await adapter.checkOrders([3001, 3002]);
         expect(results).toHaveLength(2);
-        expect(results[0]).toMatchObject({ providerOrderId: 3001, providerStatus: 'Completed' });
-        expect(results[1]).toMatchObject({ providerOrderId: 3002, providerStatus: 'Cancelled' });
-        expect(client.post).toHaveBeenCalledWith('/order/status/bulk', { order_ids: [3001, 3002] });
+        expect(results[0]).toMatchObject({ providerOrderId: '3001', providerStatus: 'Completed' });
+        expect(results[1]).toMatchObject({ providerOrderId: '3002', providerStatus: 'Cancelled' });
+        expect(client.get).toHaveBeenCalledWith('/client/api/check', { params: { orders: JSON.stringify([3001, 3002]) } });
     });
 
     it('checkOrders() returns [] for empty input', async () => {
@@ -664,7 +693,7 @@ describe('[9] getBalance()', () => {
         client.get.mockResolvedValueOnce({ data: balanceData });
         const result = await adapter.getBalance();
         expect(result).toEqual(balanceData);
-        expect(client.get).toHaveBeenCalledWith('/api/account/balance');
+        expect(client.get).toHaveBeenCalledWith('/api/GetMyInfo');
     });
 
     it('AlkasrVipAdapter.getBalance() calls /account/info', async () => {
@@ -673,6 +702,135 @@ describe('[9] getBalance()', () => {
         client.get.mockResolvedValueOnce({ data: info });
         const result = await adapter.getBalance();
         expect(result).toEqual(info);
-        expect(client.get).toHaveBeenCalledWith('/account/info');
+        expect(client.get).toHaveBeenCalledWith('/client/api/profile');
+    });
+});
+
+describe('[10] XenaRechargeAdapter', () => {
+    it('returns one synthetic configured provider product', async () => {
+        const { adapter } = makeXenaAdapter();
+        const products = await adapter.getProducts();
+
+        expect(products).toHaveLength(1);
+        expect(products[0]).toMatchObject({
+            externalProductId: 'xena-dynamic-recharge',
+            rawName: 'Xena Dynamic Recharge (Any Amount)',
+            rawPrice: '0.02',
+            minQty: 100,
+            maxQty: 100000,
+            isActive: true,
+        });
+        expect(products[0].rawPayload).toMatchObject({
+            type: 'dynamic_recharge',
+            source: 'provider_configuration',
+            amountMode: 'quantity',
+        });
+    });
+
+    it('does not activate a zero-price product when configuration is incomplete', async () => {
+        const { adapter } = makeXenaAdapter({}, {
+            xenaConfig: {
+                connectionId: 'con_123',
+                connectionStatus: 'connected',
+                product: { isActive: true },
+            },
+        });
+
+        const [product] = await adapter.getProducts();
+        expect(product.rawPrice).toBe('0');
+        expect(product.isActive).toBe(false);
+    });
+
+    it('parses Xena response shapes without assuming data wrappers everywhere', async () => {
+        const { adapter, client } = makeXenaAdapter();
+        client.post
+            .mockResolvedValueOnce({
+                data: {
+                    data: { connectionId: 'con_123', status: 'verification_required', expiresAt: '2026-07-22T21:09:17.880Z' },
+                    requestId: 'req_1',
+                },
+            })
+            .mockResolvedValueOnce({
+                data: {
+                    data: { connectionId: 'con_123', status: 'connected' },
+                    requestId: 'req_2',
+                },
+            });
+        client.get
+            .mockResolvedValueOnce({
+                data: {
+                    connectionId: 'con_123',
+                    displayName: 'Main Agency',
+                    username: 'ag***@example.com',
+                    status: 'connected',
+                    tokenExpiresAt: '2026-07-22T21:09:17.892Z',
+                },
+            })
+            .mockResolvedValueOnce({ data: { data: { balance: 19439706 }, requestId: 'req_3' } })
+            .mockResolvedValueOnce({
+                data: { uid: '123456', nickname: 'Safe nickname', avatar: null, country: 'EG', valid: true },
+            });
+
+        await expect(adapter.challengeConnection({
+            displayName: 'Main Agency',
+            username: 'agency@example.com',
+            password: 'secret',
+        })).resolves.toMatchObject({ connectionId: 'con_123', status: 'verification_required', requestId: 'req_1' });
+        await expect(adapter.verifyConnection({ connectionId: 'con_123', code: '1234' }))
+            .resolves.toMatchObject({ status: 'connected', requestId: 'req_2' });
+        await expect(adapter.getConnection()).resolves.toMatchObject({ status: 'connected', maskedUsername: 'ag***@example.com' });
+        await expect(adapter.getBalance()).resolves.toMatchObject({ balance: 19439706, source: 'xena_live' });
+        await expect(adapter.verifyTargetUser({ targetUid: '123456' })).resolves.toMatchObject({ uid: '123456', valid: true });
+    });
+
+    it('sends Idempotency-Key and stable clientReference when creating recharge', async () => {
+        const { adapter, client } = makeXenaAdapter();
+        client.post.mockResolvedValueOnce({
+            data: { id: 'rch_1', status: 'processing', errorCode: null, errorMessage: null },
+        });
+
+        const result = await adapter.placeOrder({
+            quantity: 1000,
+            targetUid: '123456',
+            orderId: 'order-id',
+            clientReference: 'order-10001',
+            providerIdempotencyKey: 'xena-order-order-id',
+        });
+
+        expect(client.post).toHaveBeenCalledWith(
+            '/v1/recharges',
+            {
+                connectionId: 'con_123',
+                targetUid: '123456',
+                amount: 1000,
+                clientReference: 'order-10001',
+            },
+            { headers: { 'Idempotency-Key': 'xena-order-order-id' } }
+        );
+        expect(result).toMatchObject({
+            success: true,
+            providerOrderId: 'rch_1',
+            providerStatus: 'Pending',
+        });
+    });
+
+    it('maps timeout placement as retryable and not definite failure', async () => {
+        const { adapter, client } = makeXenaAdapter();
+        client.post.mockRejectedValueOnce(Object.assign(new Error('timeout'), {
+            code: 'ETIMEDOUT',
+            retryable: true,
+            uncertain: true,
+        }));
+
+        const result = await adapter.placeOrder({
+            quantity: 1000,
+            targetUid: '123456',
+            orderId: 'order-id',
+            clientReference: 'order-10001',
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.providerStatus).toBe('Pending');
+        expect(result.retryable).toBe(true);
     });
 });

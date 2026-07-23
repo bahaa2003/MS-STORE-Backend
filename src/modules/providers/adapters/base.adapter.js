@@ -1,5 +1,7 @@
 'use strict';
 
+const { decryptCredential } = require('../providerCredentialCrypto');
+
 /**
  * BaseProviderAdapter
  *
@@ -181,10 +183,11 @@ class BaseProviderAdapter {
      * @returns {string|null}
      */
     _resolveToken() {
-        return this.provider.apiToken
+        const token = this.provider.apiToken
             || this.provider.apiKey
             || this.provider.effectiveToken
             || null;
+        return token ? decryptCredential(token) : null;
     }
 
     /**

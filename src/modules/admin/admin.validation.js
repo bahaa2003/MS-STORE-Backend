@@ -156,6 +156,25 @@ const updateProviderSchema = Joi.object({
     supportedFeatures: Joi.array().items(Joi.string()),
 }).min(1);
 
+const xenaChallengeSchema = Joi.object({
+    displayName: Joi.string().trim().min(2).max(100).required(),
+    username: Joi.string().trim().email().max(200).required(),
+    password: Joi.string().min(1).max(1024).required(),
+});
+
+const xenaVerifySchema = Joi.object({
+    code: Joi.string().trim().min(1).max(20).required(),
+});
+
+const xenaProductConfigSchema = Joi.object({
+    externalProductId: Joi.string().trim().max(100).default('xena-dynamic-recharge'),
+    name: Joi.string().trim().min(2).max(200).default('Xena Dynamic Recharge (Any Amount)'),
+    unitPrice: Joi.alternatives().try(Joi.string().trim(), Joi.number()).required(),
+    minAmount: Joi.number().integer().positive().required(),
+    maxAmount: Joi.number().integer().positive().min(Joi.ref('minAmount')).required(),
+    isActive: Joi.boolean().required(),
+});
+
 // ─── Order schemas ────────────────────────────────────────────────────────────
 
 const listOrdersQuery = Joi.object({
@@ -323,6 +342,9 @@ module.exports = {
         // Providers
         createProvider: createProviderSchema,
         updateProvider: updateProviderSchema,
+        xenaChallenge: xenaChallengeSchema,
+        xenaVerify: xenaVerifySchema,
+        xenaProductConfig: xenaProductConfigSchema,
         // Orders
         listOrdersQuery,
         updateOrderStatus: updateOrderStatusSchema,

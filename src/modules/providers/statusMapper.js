@@ -81,10 +81,10 @@ const _MAP = {
     partially_completed:  ORDER_STATUS.PARTIAL,
     partial_complete:     ORDER_STATUS.PARTIAL,
 
-    // ── CANCELED (provider explicitly canceled → full refund) ────────────────
-    cancelled:  ORDER_STATUS.CANCELED,
-    canceled:   ORDER_STATUS.CANCELED,
-    cancel:     ORDER_STATUS.CANCELED,
+    // ── CANCELED/REJECTED PROVIDER OUTCOMES (legacy contract: FAILED + refund)
+    cancelled:  ORDER_STATUS.FAILED,
+    canceled:   ORDER_STATUS.FAILED,
+    cancel:     ORDER_STATUS.FAILED,
 
     // ── FAILED (internal failures, rejected by provider) ────────────────────
     failed:     ORDER_STATUS.FAILED,
@@ -99,9 +99,9 @@ const _MAP = {
 /**
  * Convert a provider status string to the internal ORDER_STATUS constant.
  *
- * Defensive: if the status is not recognised, logs a warning and
- * falls back to PROCESSING (so the order keeps getting polled rather
- * than crashing the pipeline).
+ * Unknown provider statuses are unsafe to reinterpret globally. Adapters that
+ * support uncertain outcomes, such as Xena, must mark that uncertainty
+ * explicitly and keep it provider-scoped.
  *
  * @param {string} providerStatus   - raw string from the provider API
  * @returns {string}                - one of ORDER_STATUS values
@@ -110,8 +110,7 @@ const toInternalStatus = (providerStatus) => {
     const key = String(providerStatus ?? '').toLowerCase().trim();
     const internal = _MAP[key];
     if (!internal) {
-        console.warn(`[statusMapper] Unknown provider status: '${providerStatus}' — defaulting to PROCESSING`);
-        return ORDER_STATUS.PROCESSING;
+        throw new Error(`Unknown provider status: ${providerStatus}`);
     }
     return internal;
 };

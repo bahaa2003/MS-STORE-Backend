@@ -52,6 +52,7 @@ const makeOrderDoc = async (userId, overrides = {}) => {
     const product = await createProduct({ executionType: ORDER_EXECUTION_TYPES.AUTOMATIC });
 
     const [order] = await Order.create([{
+        orderNumber: 1000000000 + Math.floor(Math.random() * 900000000),
         userId,
         productId: product._id,
         quantity: 1,
@@ -546,7 +547,7 @@ describe('[6] createOrder -- AUTOMATIC executionType', () => {
         expect(order.executionType).toBe(ORDER_EXECUTION_TYPES.AUTOMATIC);
     });
 
-    it('AUTOMATIC product WITHOUT provider -> order status is PENDING', async () => {
+    it('AUTOMATIC product WITHOUT provider -> order status is PROCESSING', async () => {
         const { order } = await createOrder({
             userId: customer._id,
             productId: autoProduct._id,
@@ -554,9 +555,8 @@ describe('[6] createOrder -- AUTOMATIC executionType', () => {
             provider: null,
         });
 
-        // isAutomatic = executionType=AUTOMATIC AND provider!=null
-        // Without provider, falls back to PENDING
-        expect(order.status).toBe(ORDER_STATUS.PENDING);
+        // Current contract: executionType=AUTOMATIC starts in PROCESSING.
+        expect(order.status).toBe(ORDER_STATUS.PROCESSING);
     });
 
     it('MANUAL product always stays PENDING regardless of provider', async () => {
@@ -582,7 +582,7 @@ describe('[6] createOrder -- AUTOMATIC executionType', () => {
             provider: null,
         });
 
-        expect(order.totalPrice).toBe(100);
+        expect(order.totalPrice).toBe('100');
 
         const freshCustomer = await User.findById(customer._id);
         expect(freshCustomer.walletBalance).toBe(900);

@@ -123,6 +123,7 @@ const makeProductChain = async (providerOverrides = {}) => {
  */
 const makeProcessingOrder = ({ userId, productId, groupId, providerOrderId = 9001, walletDeducted = 10 }) =>
     Order.create({
+        orderNumber: 1000000000 + Math.floor(Math.random() * 900000000),
         userId,
         productId,
         quantity: 1,

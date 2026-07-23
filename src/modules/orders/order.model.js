@@ -277,6 +277,41 @@ const orderSchema = new mongoose.Schema(
             default: null,
         },
 
+        providerOutcome: {
+            type: String,
+            enum: ['definite', 'processing', 'uncertain'],
+            default: null,
+        },
+
+        providerErrorCode: {
+            type: String,
+            trim: true,
+            default: null,
+        },
+
+        providerRequestId: {
+            type: String,
+            trim: true,
+            default: null,
+        },
+
+        providerRequestHash: {
+            type: String,
+            trim: true,
+            default: null,
+        },
+
+        fulfillmentLockUntil: {
+            type: Date,
+            default: null,
+        },
+
+        fulfillmentLockOwner: {
+            type: String,
+            trim: true,
+            default: null,
+        },
+
         /**
          * Number of status-check attempts made by the cron job.
          * When retryCount >= MAX_RETRY_COUNT the order is force-failed.
@@ -393,6 +428,11 @@ orderSchema.index(
 orderSchema.index(
     { status: 1, executionType: 1, providerCode: 1, providerOrderId: 1, lastCheckedAt: 1 },
     { name: 'processing_orders_poll_v2' }
+);
+
+orderSchema.index(
+    { status: 1, executionType: 1, providerCode: 1, fulfillmentLockUntil: 1 },
+    { name: 'processing_orders_claim_v1' }
 );
 
 const Order = mongoose.model('Order', orderSchema);

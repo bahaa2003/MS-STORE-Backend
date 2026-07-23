@@ -53,18 +53,36 @@ const updateProvider = async (id, data, adminId) => {
     const provider = await Provider.findById(id);
     if (!provider) throw new NotFoundError('Provider');
 
-    const before = provider.toObject();
+    const before = {
+        name: provider.name,
+        slug: provider.slug,
+        baseUrl: provider.baseUrl,
+        isActive: provider.isActive,
+        syncInterval: provider.syncInterval,
+        supportedFeatures: provider.supportedFeatures,
+        credentialsConfigured: Boolean(provider.apiToken || provider.apiKey),
+    };
     const { name, slug, baseUrl, apiToken, isActive, syncInterval, supportedFeatures } = data;
 
     if (name !== undefined) provider.name = name;
     if (slug !== undefined) provider.slug = slug;
     if (baseUrl !== undefined) provider.baseUrl = baseUrl;
-    if (apiToken !== undefined) provider.apiToken = apiToken;
+    if (apiToken !== undefined && String(apiToken).trim() !== '') provider.apiToken = apiToken;
     if (isActive !== undefined) provider.isActive = isActive;
     if (syncInterval !== undefined) provider.syncInterval = syncInterval;
     if (supportedFeatures !== undefined) provider.supportedFeatures = supportedFeatures;
 
     await provider.save();
+
+    const after = {
+        name: provider.name,
+        slug: provider.slug,
+        baseUrl: provider.baseUrl,
+        isActive: provider.isActive,
+        syncInterval: provider.syncInterval,
+        supportedFeatures: provider.supportedFeatures,
+        credentialsConfigured: Boolean(provider.apiToken || provider.apiKey),
+    };
 
     createAuditLog({
         actorId: adminId,
@@ -72,7 +90,7 @@ const updateProvider = async (id, data, adminId) => {
         action: ADMIN_ACTIONS.PROVIDER_UPDATED,
         entityType: ENTITY_TYPES.PROVIDER,
         entityId: provider._id,
-        metadata: { before, after: provider.toObject() },
+        metadata: { before, after },
     });
 
     return provider;
@@ -123,7 +141,7 @@ const getProviderBalance = async (id) => {
     if (!provider) throw new NotFoundError('Provider');
     if (!provider.isActive) throw new BusinessRuleError('Provider is inactive.', 'PROVIDER_INACTIVE');
 
-    const adapter = getProviderAdapter(provider);
+    const adapter = getProviderAdapter(provider, { strict: true });
     const balance = await adapter.getBalance();
     return { provider: provider.name, balance };
 };
@@ -135,7 +153,7 @@ const getProviderLiveProducts = async (id) => {
     if (!provider) throw new NotFoundError('Provider');
     if (!provider.isActive) throw new BusinessRuleError('Provider is inactive.', 'PROVIDER_INACTIVE');
 
-    const adapter = getProviderAdapter(provider);
+    const adapter = getProviderAdapter(provider, { strict: true });
     const products = await adapter.getProducts();
     return { provider: provider.name, count: products.length, products };
 };
@@ -151,7 +169,7 @@ const testProviderConnection = async (id) => {
     const provider = await Provider.findById(id);
     if (!provider) throw new NotFoundError('Provider');
 
-    const adapter = getProviderAdapter(provider);
+    const adapter = getProviderAdapter(provider, { strict: true });
     const startTime = Date.now();
 
     try {
@@ -192,7 +210,7 @@ const getProductPrice = async (providerId, externalProductId) => {
     if (!provider) throw new NotFoundError('Provider');
     if (!provider.isActive) throw new BusinessRuleError('Provider is inactive.', 'PROVIDER_INACTIVE');
 
-    const adapter = getProviderAdapter(provider);
+    const adapter = getProviderAdapter(provider, { strict: true });
 
     try {
         const products = await adapter.getProducts();
@@ -242,7 +260,7 @@ const checkProviderOrder = async (id, orderId) => {
     if (!provider.isActive) throw new BusinessRuleError('Provider is inactive.', 'PROVIDER_INACTIVE');
     if (!orderId) throw new BusinessRuleError('orderId query parameter is required.', 'MISSING_ORDER_ID');
 
-    const adapter = getProviderAdapter(provider);
+    const adapter = getProviderAdapter(provider, { strict: true });
 
     try {
         const result = await adapter.checkOrder(orderId);

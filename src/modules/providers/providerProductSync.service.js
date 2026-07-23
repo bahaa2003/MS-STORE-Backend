@@ -47,7 +47,7 @@
 const { Provider } = require('./provider.model');
 const { ProviderProduct } = require('./providerProduct.model');
 const { Product, PRICING_MODES, computeFinalPrice } = require('../products/product.model');
-const { getAdapter } = require('./adapters/adapter.factory');
+const { getProviderAdapter } = require('./adapters/adapter.factory');
 const { NotFoundError, BusinessRuleError } = require('../../shared/errors/AppError');
 
 // =============================================================================
@@ -188,7 +188,7 @@ const _upsertOne = async (providerId, dto, now) => {
  * @private
  */
 const _performSync = async (provider, adapterOptions) => {
-    const adapter = getAdapter(provider, adapterOptions);
+    const adapter = getProviderAdapter(provider, { ...adapterOptions, strict: true });
     const now = new Date();
     const errors = [];
     let upserted = 0;

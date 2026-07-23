@@ -234,7 +234,7 @@ const pollProviderGroup = async (providerId, providerDoc, orders) => {
     // Resolve the adapter for this provider
     let adapter;
     try {
-        adapter = getProviderAdapter(providerDoc);
+        adapter = getProviderAdapter(providerDoc, { strict: true });
     } catch (err) {
         result.errors.push(`[adapter] ${err.message}`);
         result.pending = orders.length;

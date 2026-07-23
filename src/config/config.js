@@ -95,6 +95,12 @@ const config = {
                 .filter(Boolean)
             : DEFAULT_RECEIPT_OCR_KEYWORDS,
     },
+
+    xena: {
+        apiUrl: process.env.XENA_API_URL || 'https://api.digiteech.me',
+        timeoutMs: parseNumber(process.env.XENA_API_TIMEOUT_MS, 20000),
+        statusCheckConcurrency: parseNumber(process.env.XENA_STATUS_CHECK_CONCURRENCY, 3),
+    },
 };
 
 // Guard: fail fast if critical configs are missing

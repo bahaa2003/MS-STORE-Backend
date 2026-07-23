@@ -164,6 +164,10 @@ router.post('/providers', requirePermission('MANAGE_SUPPLIERS'), validateBody(sc
 router.get('/providers/:id/balance', requirePermission('MANAGE_SUPPLIERS'), providersCtrl.getProviderBalance);
 router.get('/providers/:id/products', requirePermission('MANAGE_SUPPLIERS'), providersCtrl.getProviderLiveProducts);
 router.post('/providers/:id/test-connection', requirePermission('MANAGE_SUPPLIERS'), providersCtrl.testProviderConnection);
+router.post('/providers/:id/xena/challenge', requirePermission('MANAGE_SUPPLIERS'), validateBody(schemas.xenaChallenge), providersCtrl.challengeXenaConnection);
+router.post('/providers/:id/xena/verify', requirePermission('MANAGE_SUPPLIERS'), validateBody(schemas.xenaVerify), providersCtrl.verifyXenaConnection);
+router.get('/providers/:id/xena/connection', requirePermission('MANAGE_SUPPLIERS'), providersCtrl.getXenaConnection);
+router.patch('/providers/:id/xena/product-config', requirePermission('MANAGE_SUPPLIERS'), validateBody(schemas.xenaProductConfig), providersCtrl.updateXenaProductConfig);
 router.get('/providers/:id/check-order', requirePermission('MANAGE_SUPPLIERS'), providersCtrl.checkProviderOrder);
 router.get('/providers/:providerId/products/:externalProductId/price', requirePermission('MANAGE_SUPPLIERS'), providersCtrl.getProductPrice);
 router.patch('/providers/:id/toggle', requirePermission('MANAGE_SUPPLIERS'), providersCtrl.toggleProvider);
