@@ -856,6 +856,118 @@ describe('[10] XenaRechargeAdapter', () => {
         });
     });
 
+    it('extracts direct and wrapped Xena recharge IDs as opaque strings', async () => {
+        const { adapter, client } = makeXenaAdapter();
+        client.post
+            .mockResolvedValueOnce({ data: { rechargeId: 12345678901234567890n.toString(), status: 'processing', requestId: 'req_direct' } })
+            .mockResolvedValueOnce({ data: { data: { id: 'rch_wrapped', status: 'succeeded', requestId: 'req_wrapped' } } });
+
+        const direct = await adapter.placeOrder({
+            quantity: 1000,
+            targetUid: '123456',
+            orderId: 'order-id-1',
+            clientReference: 'order-10001',
+        });
+        const wrapped = await adapter.placeOrder({
+            quantity: 1000,
+            targetUid: '123456',
+            orderId: 'order-id-2',
+            clientReference: 'order-10002',
+        });
+
+        expect(direct.providerOrderId).toBe('12345678901234567890');
+        expect(typeof direct.providerOrderId).toBe('string');
+        expect(direct.requestId).toBe('req_direct');
+        expect(wrapped).toMatchObject({
+            providerOrderId: 'rch_wrapped',
+            providerStatus: 'Completed',
+            requestId: 'req_wrapped',
+        });
+    });
+
+    it('never uses requestId or clientReference as the Xena recharge providerOrderId', async () => {
+        const { adapter, client } = makeXenaAdapter();
+        client.post.mockResolvedValueOnce({
+            data: { status: 'processing', requestId: 'req_trace_only' },
+        });
+
+        const result = await adapter.placeOrder({
+            quantity: 1000,
+            targetUid: '123456',
+            orderId: 'order-id',
+            clientReference: 'order-11054',
+        });
+
+        expect(result.providerOrderId).toBeNull();
+        expect(result.requestId).toBe('req_trace_only');
+        expect(result.errorCode).toBe('XENA_RECHARGE_ID_MISSING');
+        expect(JSON.stringify(result)).not.toContain('order-11054');
+        expect(result.providerOrderId).not.toBe('req_trace_only');
+    });
+
+    it.each([
+        ['failed', false, 'Failed', false],
+        ['unknown', true, 'Unknown', true],
+    ])('maps %s create responses without inventing a recharge ID', async (status, success, providerStatus, uncertain) => {
+        const { adapter, client } = makeXenaAdapter();
+        client.post.mockResolvedValueOnce({ data: { id: 'rch_status', status } });
+
+        const result = await adapter.placeOrder({
+            quantity: 1000,
+            targetUid: '123456',
+            orderId: 'order-id',
+            clientReference: 'order-10001',
+        });
+
+        expect(result).toMatchObject({
+            success,
+            providerOrderId: 'rch_status',
+            providerStatus,
+            outcomeUncertain: uncertain,
+        });
+    });
+
+    it('sanitizes create raw response without credentials or connectionId', async () => {
+        const { adapter, client } = makeXenaAdapter();
+        client.post.mockResolvedValueOnce({
+            data: {
+                data: {
+                    id: 'rch_safe',
+                    status: 'processing',
+                    connectionId: 'con_should_not_be_stored',
+                    apiKey: 'xra_live_secret',
+                    requestId: 'req_safe',
+                },
+            },
+        });
+
+        const result = await adapter.placeOrder({
+            quantity: 1000,
+            targetUid: '123456',
+            orderId: 'order-id',
+            clientReference: 'order-10001',
+        });
+
+        const serialized = JSON.stringify(result.rawResponse);
+        expect(result.providerOrderId).toBe('rch_safe');
+        expect(serialized).not.toContain('con_should_not_be_stored');
+        expect(serialized).not.toContain('xra_live_secret');
+    });
+
+    it('checks Xena recharge status using providerOrderId in the URL', async () => {
+        const { adapter, client } = makeXenaAdapter();
+        client.get.mockResolvedValueOnce({ data: { data: { id: 'rch_poll', status: 'succeeded', requestId: 'req_poll' } } });
+
+        const result = await adapter.checkOrder('rch_poll');
+
+        expect(client.get).toHaveBeenCalledWith('/v1/recharges/rch_poll');
+        expect(result).toMatchObject({
+            providerOrderId: 'rch_poll',
+            providerStatus: 'Completed',
+            requestId: 'req_poll',
+        });
+    });
+
     it('maps timeout placement as retryable and not definite failure', async () => {
         const { adapter, client } = makeXenaAdapter();
         client.post.mockRejectedValueOnce(Object.assign(new Error('timeout'), {

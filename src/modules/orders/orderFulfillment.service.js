@@ -36,6 +36,87 @@ const {
 const { toInternalStatus, isTerminal, requiresRefund } = require('../providers/statusMapper');
 const { notifyOrderCompleted, notifyOrderFailed } = require('../notifications/notification.service');
 const { XENA_PROVIDER_SLUG } = require('../providers/xena.constants');
+const { extractXenaRechargeId } = require('../providers/adapters/xena.adapter');
+
+const XENA_RECHARGE_ID_MISSING = 'XENA_RECHARGE_ID_MISSING';
+
+const isXenaOrder = (order) => String(order?.providerCode || '').toLowerCase() === XENA_PROVIDER_SLUG;
+
+const logXenaMissingRechargeId = (order, extra = {}) => {
+    console.warn('[XenaRechargeIdMissing]', {
+        orderId: order?._id?.toString?.() || null,
+        orderNumber: order?.orderNumber ?? null,
+        providerCode: order?.providerCode ?? null,
+        providerStatus: order?.providerStatus ?? null,
+        requestId: order?.providerRequestId ?? null,
+        errorCode: XENA_RECHARGE_ID_MISSING,
+        ...extra,
+    });
+};
+
+const moveXenaMissingIdToManualReview = async (order, rawResponse = null, now = new Date()) => {
+    await Order.findByIdAndUpdate(order._id, {
+        $set: {
+            status: ORDER_STATUS.MANUAL_REVIEW,
+            providerRawResponse: rawResponse ?? order.providerRawResponse ?? null,
+            providerOutcome: 'uncertain',
+            providerErrorCode: XENA_RECHARGE_ID_MISSING,
+            providerRequestId: order.providerRequestId ?? rawResponse?.requestId ?? null,
+            lastCheckedAt: now,
+            fulfillmentLockUntil: null,
+            fulfillmentLockOwner: null,
+        },
+    });
+
+    createAuditLog({
+        actorId: order.userId,
+        actorRole: ACTOR_ROLES.SYSTEM,
+        action: PROVIDER_ACTIONS.RETRY_LIMIT_EXCEEDED,
+        entityType: ENTITY_TYPES.ORDER,
+        entityId: order._id,
+        metadata: {
+            orderId: order._id.toString(),
+            providerCode: order.providerCode,
+            reason: XENA_RECHARGE_ID_MISSING,
+        },
+    });
+
+    logXenaMissingRechargeId(order, { action: 'manual_review' });
+};
+
+const reconcileXenaMissingProviderOrderIds = async (orders, stats) => {
+    const now = new Date();
+    const remaining = [];
+
+    for (const order of orders) {
+        if (!isXenaOrder(order) || order.providerOrderId) {
+            remaining.push(order);
+            continue;
+        }
+
+        const recoveredId = extractXenaRechargeId(order.providerRawResponse);
+        if (recoveredId) {
+            await Order.findByIdAndUpdate(order._id, {
+                $set: {
+                    providerOrderId: recoveredId,
+                    providerErrorCode: null,
+                    lastCheckedAt: now,
+                    fulfillmentLockUntil: null,
+                    fulfillmentLockOwner: null,
+                },
+            });
+            const updated = await Order.findById(order._id);
+            remaining.push(updated);
+            stats.pending++;
+            continue;
+        }
+
+        await moveXenaMissingIdToManualReview(order, order.providerRawResponse, now);
+        stats.manualReview++;
+    }
+
+    return remaining.filter(Boolean);
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // IDEMPOTENT REFUND
@@ -357,7 +438,14 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
         }
     }
 
-    console.log(`[Fulfillment] Provider response for order ${orderId}:`, JSON.stringify(result));
+    console.log(`[Fulfillment] Provider response for order ${orderId}:`, JSON.stringify({
+        success: result?.success,
+        providerOrderId: result?.providerOrderId ?? null,
+        providerStatus: result?.providerStatus ?? null,
+        providerOutcome: result?.outcomeUncertain ? 'uncertain' : null,
+        errorCode: result?.errorCode ?? result?.rawResponse?.code ?? null,
+        requestId: result?.requestId ?? result?.rawResponse?.requestId ?? null,
+    }));
 
     // ── Interpret result ───────────────────────────────────────────────────────
     let newStatus;
@@ -436,6 +524,29 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
     }
 
     if (newStatus === ORDER_STATUS.PROCESSING) {
+        if (isXenaOrder(order) && !result.providerOrderId && (result.errorCode === XENA_RECHARGE_ID_MISSING || result.rawResponse?.code === XENA_RECHARGE_ID_MISSING)) {
+            await Order.findByIdAndUpdate(orderId, {
+                $set: {
+                    status: ORDER_STATUS.MANUAL_REVIEW,
+                    providerStatus: result.providerStatus,
+                    providerOrderId: null,
+                    providerRawResponse: result.rawResponse,
+                    providerOutcome: 'uncertain',
+                    providerErrorCode: XENA_RECHARGE_ID_MISSING,
+                    providerRequestId: result.requestId ?? result.rawResponse?.requestId ?? null,
+                    providerRequestHash: result.requestHash ?? result.rawResponse?.requestHash ?? null,
+                    lastCheckedAt: now,
+                    fulfillmentLockUntil: null,
+                    fulfillmentLockOwner: null,
+                },
+            });
+            logXenaMissingRechargeId(order, {
+                action: 'placement_manual_review',
+                requestId: result.requestId ?? result.rawResponse?.requestId ?? null,
+            });
+            return { order: await Order.findById(orderId), placed: false, refunded: false, manualReview: true };
+        }
+
         const nextRetry = result.providerOrderId ? order.retryCount : order.retryCount + 1;
         if (!result.providerOrderId && nextRetry >= MAX_RETRY_COUNT) {
             await Order.findByIdAndUpdate(orderId, {
@@ -690,6 +801,9 @@ const processOrderStatusResult = async (order, statusResult) => {
                 status: ORDER_STATUS.COMPLETED,
                 providerStatus: providerStatus,
                 providerRawResponse: statusResult.rawResponse,
+                providerOutcome: 'definite',
+                providerErrorCode: statusResult.errorCode ?? statusResult.rawResponse?.errorCode ?? null,
+                providerRequestId: statusResult.requestId ?? statusResult.rawResponse?.requestId ?? null,
                 lastCheckedAt: now,
             },
         });
@@ -778,6 +892,9 @@ const processOrderStatusResult = async (order, statusResult) => {
                 status: ORDER_STATUS.CANCELED,
                 providerStatus: providerStatus,
                 providerRawResponse: statusResult.rawResponse,
+                providerOutcome: 'definite',
+                providerErrorCode: statusResult.errorCode ?? statusResult.rawResponse?.errorCode ?? null,
+                providerRequestId: statusResult.requestId ?? statusResult.rawResponse?.requestId ?? null,
                 failedAt: now,
                 lastCheckedAt: now,
             },
@@ -825,6 +942,9 @@ const processOrderStatusResult = async (order, statusResult) => {
             status: ORDER_STATUS.FAILED,
             providerStatus: providerStatus,
             providerRawResponse: statusResult.rawResponse,
+            providerOutcome: 'definite',
+            providerErrorCode: statusResult.errorCode ?? statusResult.rawResponse?.errorCode ?? null,
+            providerRequestId: statusResult.requestId ?? statusResult.rawResponse?.requestId ?? null,
             failedAt: now,
             lastCheckedAt: now,
         },
@@ -911,7 +1031,7 @@ const pollProcessingOrders = async (providerOverride = null) => {
     // Exhausted orders are moved to MANUAL_REVIEW RIGHT NOW — NO provider API call
     // is made for them. This prevents infinite loops when a provider goes offline.
     const exhausted = [];
-    const healthy   = [];
+    let healthy   = [];
 
     for (const order of processingOrders) {
         if (order.retryCount >= MAX_RETRY_COUNT) {
@@ -978,30 +1098,7 @@ const pollProcessingOrders = async (providerOverride = null) => {
     }
 
     stats.checked = healthy.length;
-    const xenaPlacementRetries = healthy.filter((order) =>
-        String(order.providerCode || '').toLowerCase() === XENA_PROVIDER_SLUG
-        && !order.providerOrderId
-    );
-
-    if (xenaPlacementRetries.length) {
-        for (const retryOrder of xenaPlacementRetries) {
-            try {
-                await executeOrder(retryOrder._id);
-                stats.pending++;
-            } catch (err) {
-                stats.errors.push(`[xena-retry:${retryOrder._id}] ${err.message}`);
-            }
-        }
-
-        for (let i = healthy.length - 1; i >= 0; i--) {
-            if (
-                String(healthy[i].providerCode || '').toLowerCase() === XENA_PROVIDER_SLUG
-                && !healthy[i].providerOrderId
-            ) {
-                healthy.splice(i, 1);
-            }
-        }
-    }
+    healthy = await reconcileXenaMissingProviderOrderIds(healthy, stats);
 
     if (!healthy.length) {
         return stats;

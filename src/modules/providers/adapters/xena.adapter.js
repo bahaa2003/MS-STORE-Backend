@@ -57,6 +57,59 @@ const mapRechargeStatus = (status) => {
     }
 };
 
+const normalizeOpaqueRechargeId = (value) => {
+    if (value === undefined || value === null) return null;
+    if (typeof value === 'object') return null;
+    const id = String(value).trim();
+    return id.length > 0 ? id : null;
+};
+
+const getRechargePayloadSource = (payload) => {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        return { source: {}, wrapper: payload };
+    }
+    const data = payload.data;
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+        return { source: data, wrapper: payload };
+    }
+    return { source: payload, wrapper: payload };
+};
+
+const extractXenaRechargeId = (payload) => {
+    const { source, wrapper } = getRechargePayloadSource(payload);
+    return normalizeOpaqueRechargeId(source.id)
+        || normalizeOpaqueRechargeId(source.rechargeId)
+        || normalizeOpaqueRechargeId(wrapper?.id)
+        || normalizeOpaqueRechargeId(wrapper?.rechargeId);
+};
+
+const extractXenaRechargeStatus = (payload) => {
+    const { source, wrapper } = getRechargePayloadSource(payload);
+    return source.status ?? wrapper?.status ?? XENA_RECHARGE_STATUS.PROCESSING;
+};
+
+const extractXenaRequestId = (payload) => {
+    const { source, wrapper } = getRechargePayloadSource(payload);
+    return source.requestId ?? wrapper?.requestId ?? null;
+};
+
+const sanitizeRechargeResponse = (payload, { idempotencyKey = null, requestHash = null, outcomeUncertain = false, missingId = false } = {}) => {
+    const { source, wrapper } = getRechargePayloadSource(payload);
+    return {
+        id: normalizeOpaqueRechargeId(source.id) || normalizeOpaqueRechargeId(wrapper?.id),
+        rechargeId: normalizeOpaqueRechargeId(source.rechargeId) || normalizeOpaqueRechargeId(wrapper?.rechargeId),
+        status: source.status ?? wrapper?.status ?? null,
+        errorCode: source.errorCode ?? wrapper?.errorCode ?? null,
+        errorMessage: source.errorMessage ?? wrapper?.errorMessage ?? null,
+        providerMessage: source.providerMessage ?? wrapper?.providerMessage ?? null,
+        requestId: source.requestId ?? wrapper?.requestId ?? null,
+        idempotencyKey,
+        requestHash,
+        outcomeUncertain,
+        code: missingId ? 'XENA_RECHARGE_ID_MISSING' : (source.code ?? wrapper?.code ?? null),
+    };
+};
+
 const normalizeBalanceScalar = (value) => {
     if (typeof value === 'number') {
         if (!Number.isFinite(value)) return null;
@@ -361,28 +414,31 @@ class XenaRechargeAdapter extends BaseProviderAdapter {
             const { data } = await this._client.post('/v1/recharges', body, {
                 headers: { 'Idempotency-Key': idempotencyKey },
             });
-            const mapped = mapRechargeStatus(data.status);
+            const providerOrderId = extractXenaRechargeId(data);
+            const rechargeStatus = extractXenaRechargeStatus(data);
+            const normalizedRechargeStatus = String(rechargeStatus ?? '').toLowerCase();
+            const mapped = mapRechargeStatus(rechargeStatus);
+            const requestHash = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
+            const missingId = !providerOrderId && normalizedRechargeStatus !== XENA_RECHARGE_STATUS.FAILED;
+            const outcomeUncertain = mapped.outcomeUncertain || missingId;
             return {
-                success: data.status !== XENA_RECHARGE_STATUS.FAILED,
-                providerOrderId: data.id ?? null,
+                success: normalizedRechargeStatus !== XENA_RECHARGE_STATUS.FAILED,
+                providerOrderId,
                 providerStatus: mapped.providerStatus,
-                rawResponse: {
-                    id: data.id ?? null,
-                    status: data.status,
-                    errorCode: data.errorCode ?? null,
-                    errorMessage: data.errorMessage ?? null,
-                    providerMessage: data.providerMessage ?? null,
-                    requestId: data.requestId ?? null,
+                rawResponse: sanitizeRechargeResponse(data, {
                     idempotencyKey,
-                    requestHash: crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex'),
-                    outcomeUncertain: mapped.outcomeUncertain,
-                },
-                errorMessage: data.errorMessage ?? null,
-                outcomeUncertain: mapped.outcomeUncertain,
-                retryable: data.status === XENA_RECHARGE_STATUS.PROCESSING || mapped.outcomeUncertain,
-                requestId: data.requestId ?? null,
-                errorCode: data.errorCode ?? null,
-                requestHash: crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex'),
+                    requestHash,
+                    outcomeUncertain,
+                    missingId,
+                }),
+                errorMessage: data?.data?.errorMessage ?? data?.errorMessage ?? null,
+                outcomeUncertain,
+                retryable: rechargeStatus === XENA_RECHARGE_STATUS.PROCESSING || outcomeUncertain,
+                requestId: extractXenaRequestId(data),
+                errorCode: missingId
+                    ? 'XENA_RECHARGE_ID_MISSING'
+                    : (data?.data?.errorCode ?? data?.errorCode ?? null),
+                requestHash,
             };
         } catch (err) {
             if (err.uncertain || err.retryable) {
@@ -421,20 +477,18 @@ class XenaRechargeAdapter extends BaseProviderAdapter {
 
     async checkOrder(orderId) {
         const { data } = await this._client.get(`/v1/recharges/${encodeURIComponent(orderId)}`);
-        const mapped = mapRechargeStatus(data.status);
+        const providerOrderId = extractXenaRechargeId(data) || normalizeOpaqueRechargeId(orderId);
+        const rechargeStatus = extractXenaRechargeStatus(data);
+        const mapped = mapRechargeStatus(rechargeStatus);
         return {
-            providerOrderId: data.id ?? orderId,
+            providerOrderId,
             providerStatus: mapped.providerStatus,
-            rawResponse: {
-                id: data.id ?? orderId,
-                status: data.status,
-                errorCode: data.errorCode ?? null,
-                errorMessage: data.errorMessage ?? null,
-                providerMessage: data.providerMessage ?? null,
+            rawResponse: sanitizeRechargeResponse(data, {
                 outcomeUncertain: mapped.outcomeUncertain,
-            },
+            }),
             outcomeUncertain: mapped.outcomeUncertain,
-            errorCode: data.errorCode ?? null,
+            requestId: extractXenaRequestId(data),
+            errorCode: data?.data?.errorCode ?? data?.errorCode ?? null,
         };
     }
 
@@ -469,6 +523,9 @@ module.exports = {
     TARGET_UID_RE,
     isPositiveSafeInteger,
     mapRechargeStatus,
+    extractXenaRechargeId,
+    extractXenaRechargeStatus,
+    sanitizeRechargeResponse,
     normalizeBalanceScalar,
     extractBalancePayload,
     normalizeTargetUserPayload,

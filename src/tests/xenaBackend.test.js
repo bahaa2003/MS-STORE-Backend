@@ -14,6 +14,7 @@ const providerService = require('../modules/providers/provider.service');
 const adminProvidersService = require('../modules/admin/admin.providers.service');
 const { AuditLog } = require('../modules/audit/audit.model');
 const { createOrder } = require('../modules/orders/order.service');
+const { inspectXenaProcessingOrders } = require('../../scripts/reconciliation/fix-xena-processing-orders');
 const { decryptCredential, isEncrypted } = require('../modules/providers/providerCredentialCrypto');
 const jwt = require('jsonwebtoken');
 const config = require('../config/config');
@@ -989,39 +990,99 @@ describe('Xena polling, refund safety, and leases', () => {
         expect(await walletTxCount(customer._id)).toBe(0);
     });
 
-    it.each([
-        ['timeout'],
-        ['429'],
-        ['ambiguous 502'],
-    ])('%s placement uncertainty retries the same Xena POST identity and never refunds', async () => {
+    it('persists Xena recharge ID and request trace separately for processing create responses', async () => {
+        const { order, customer } = await makeXenaOrderFixture({ providerOrderId: null });
+        MatrixXenaAdapter.placeQueue.push({
+            success: true,
+            providerOrderId: 'rch_created_processing',
+            providerStatus: 'Pending',
+            providerOutcome: 'processing',
+            requestId: 'req_create_trace',
+            rawResponse: { id: 'rch_created_processing', status: 'processing', requestId: 'req_create_trace' },
+        });
+
+        await executeOrder(order._id);
+
+        const fresh = await Order.findById(order._id);
+        expect(fresh.status).toBe(ORDER_STATUS.PROCESSING);
+        expect(fresh.providerOrderId).toBe('rch_created_processing');
+        expect(fresh.providerRequestId).toBe('req_create_trace');
+        expect(fresh.providerRequestId).not.toBe(fresh.providerOrderId);
+        expect(await walletTxCount(customer._id)).toBe(0);
+    });
+
+    it('marks Xena order completed immediately when create response is already succeeded', async () => {
+        const { order, customer } = await makeXenaOrderFixture({ providerOrderId: null });
+        MatrixXenaAdapter.placeQueue.push({
+            success: true,
+            providerOrderId: 'rch_created_done',
+            providerStatus: 'Completed',
+            requestId: 'req_done_trace',
+            rawResponse: { id: 'rch_created_done', status: 'succeeded', requestId: 'req_done_trace' },
+        });
+
+        await executeOrder(order._id);
+
+        const fresh = await Order.findById(order._id);
+        expect(fresh.status).toBe(ORDER_STATUS.COMPLETED);
+        expect(fresh.providerOrderId).toBe('rch_created_done');
+        expect(fresh.providerRequestId).toBe('req_done_trace');
+        expect(await walletTxCount(customer._id)).toBe(0);
+    });
+
+    it('processing create response without a recharge ID is not left silently pollable forever', async () => {
         const { order, customer } = await makeXenaOrderFixture({ providerOrderId: null });
         MatrixXenaAdapter.placeQueue.push({
             success: true,
             providerOrderId: null,
             providerStatus: 'Pending',
             outcomeUncertain: true,
-            rawResponse: { outcomeUncertain: true, retryable: true },
-        }, {
+            errorCode: 'XENA_RECHARGE_ID_MISSING',
+            requestId: 'req_missing_id',
+            rawResponse: { status: 'processing', requestId: 'req_missing_id', code: 'XENA_RECHARGE_ID_MISSING', outcomeUncertain: true },
+        });
+
+        await executeOrder(order._id);
+
+        const fresh = await Order.findById(order._id);
+        expect(fresh.status).toBe(ORDER_STATUS.MANUAL_REVIEW);
+        expect(fresh.providerOrderId).toBeNull();
+        expect(fresh.providerErrorCode).toBe('XENA_RECHARGE_ID_MISSING');
+        expect(fresh.refunded).toBe(false);
+        expect(await walletTxCount(customer._id)).toBe(0);
+    });
+
+    it.each([
+        ['timeout'],
+        ['429'],
+        ['ambiguous 502'],
+    ])('%s placement uncertainty without recharge ID moves to manual review without a second provider POST', async () => {
+        const { order, customer } = await makeXenaOrderFixture({ providerOrderId: null });
+        MatrixXenaAdapter.placeQueue.push({
             success: true,
-            providerOrderId: 'rch_after_retry',
+            providerOrderId: null,
             providerStatus: 'Pending',
-            rawResponse: { status: 'processing' },
+            outcomeUncertain: true,
+            errorCode: 'XENA_RECHARGE_ID_MISSING',
+            requestId: 'req_missing_id',
+            rawResponse: { status: 'processing', requestId: 'req_missing_id', code: 'XENA_RECHARGE_ID_MISSING', outcomeUncertain: true },
         });
 
         await executeOrder(order._id);
         await pollProcessingOrders();
 
         const fresh = await Order.findById(order._id);
-        expect(MatrixXenaAdapter.placeCalls).toHaveLength(2);
-        expect(MatrixXenaAdapter.placeCalls[1]).toMatchObject({
+        expect(MatrixXenaAdapter.placeCalls).toHaveLength(1);
+        expect(MatrixXenaAdapter.placeCalls[0]).toMatchObject({
             orderId: String(order._id),
             clientReference: `order-${order.orderNumber}`,
             providerIdempotencyKey: `xena-order-${order._id}`,
             targetUid: '123456',
             quantity: 10,
         });
-        expect(fresh.providerOrderId).toBe('rch_after_retry');
-        expect(fresh.status).toBe(ORDER_STATUS.PROCESSING);
+        expect(fresh.providerOrderId).toBeNull();
+        expect(fresh.status).toBe(ORDER_STATUS.MANUAL_REVIEW);
+        expect(fresh.providerErrorCode).toBe('XENA_RECHARGE_ID_MISSING');
         expect(fresh.refunded).toBe(false);
         expect(await walletTxCount(customer._id)).toBe(0);
     });
@@ -1039,6 +1100,51 @@ describe('Xena polling, refund safety, and leases', () => {
 
         expect(stats.pending).toBe(1);
         expect(fresh.status).toBe(ORDER_STATUS.PROCESSING);
+        expect(fresh.refunded).toBe(false);
+        expect(await walletTxCount(customer._id)).toBe(0);
+    });
+
+    it('polling backfills a Xena providerOrderId from stored wrapped raw response before status checks', async () => {
+        const { order } = await makeXenaOrderFixture({
+            providerOrderId: null,
+            orderOverrides: {
+                providerRawResponse: { data: { id: 'rch_recovered', status: 'processing' }, requestId: 'req_trace_only' },
+                providerRequestId: 'req_trace_only',
+            },
+        });
+        MatrixXenaAdapter.statusQueue.push([
+            { providerOrderId: 'rch_recovered', providerStatus: 'Completed', requestId: 'req_status', rawResponse: { id: 'rch_recovered', status: 'succeeded', requestId: 'req_status' } },
+        ]);
+
+        const stats = await pollProcessingOrders();
+
+        const fresh = await Order.findById(order._id);
+        expect(stats.completed).toBe(1);
+        expect(MatrixXenaAdapter.placeCalls).toHaveLength(0);
+        expect(MatrixXenaAdapter.checkCalls[0]).toEqual(['rch_recovered']);
+        expect(fresh.providerOrderId).toBe('rch_recovered');
+        expect(fresh.providerRequestId).toBe('req_status');
+        expect(fresh.status).toBe(ORDER_STATUS.COMPLETED);
+    });
+
+    it('polling moves null-providerOrderId Xena orders with only requestId to manual review', async () => {
+        const { order, customer } = await makeXenaOrderFixture({
+            providerOrderId: null,
+            orderOverrides: {
+                providerRawResponse: { status: 'processing', requestId: 'req_only' },
+                providerRequestId: 'req_only',
+            },
+        });
+
+        const stats = await pollProcessingOrders();
+
+        const fresh = await Order.findById(order._id);
+        expect(stats.manualReview).toBe(1);
+        expect(MatrixXenaAdapter.placeCalls).toHaveLength(0);
+        expect(MatrixXenaAdapter.checkCalls).toHaveLength(0);
+        expect(fresh.status).toBe(ORDER_STATUS.MANUAL_REVIEW);
+        expect(fresh.providerErrorCode).toBe('XENA_RECHARGE_ID_MISSING');
+        expect(fresh.providerOrderId).toBeNull();
         expect(fresh.refunded).toBe(false);
         expect(await walletTxCount(customer._id)).toBe(0);
     });
@@ -1105,6 +1211,62 @@ describe('Xena polling, refund safety, and leases', () => {
         expect((await Order.findById(manual.order._id)).status).toBe(ORDER_STATUS.MANUAL_REVIEW);
     });
 
+    it('reconciliation dry run reports actions without modifying Xena orders', async () => {
+        const recoverable = await makeXenaOrderFixture({
+            providerOrderId: null,
+            orderOverrides: { providerRawResponse: { data: { rechargeId: 'rch_dry_recover', status: 'processing' }, requestId: 'req_dry' } },
+        });
+        const unrecoverable = await makeXenaOrderFixture({
+            providerOrderId: null,
+            orderOverrides: { providerRawResponse: { status: 'processing', requestId: 'req_not_id' }, providerRequestId: 'req_not_id' },
+        });
+
+        const summary = await inspectXenaProcessingOrders({
+            db: Order.db.db,
+            apply: false,
+            logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
+        });
+
+        expect(summary).toMatchObject({ scanned: 2, backfillable: 1, manualReview: 1, modified: 0, dryRun: true });
+        expect((await Order.findById(recoverable.order._id)).providerOrderId).toBeNull();
+        expect((await Order.findById(unrecoverable.order._id)).status).toBe(ORDER_STATUS.PROCESSING);
+    });
+
+    it('reconciliation backfills only proven recharge IDs and rejects requestId as an ID', async () => {
+        const recoverable = await makeXenaOrderFixture({
+            providerOrderId: null,
+            orderOverrides: { providerRawResponse: { id: 'rch_apply_recover', status: 'processing', requestId: 'req_apply' } },
+        });
+        const unrecoverable = await makeXenaOrderFixture({
+            providerOrderId: null,
+            orderOverrides: { providerRawResponse: { status: 'processing', requestId: 'req_trace_only' }, providerRequestId: 'req_trace_only' },
+        });
+
+        const first = await inspectXenaProcessingOrders({
+            db: Order.db.db,
+            apply: true,
+            logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
+        });
+        const second = await inspectXenaProcessingOrders({
+            db: Order.db.db,
+            apply: true,
+            logger: { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
+        });
+
+        const recovered = await Order.findById(recoverable.order._id);
+        const manual = await Order.findById(unrecoverable.order._id);
+        expect(first.modified).toBe(2);
+        expect(second.scanned).toBe(0);
+        expect(recovered.providerOrderId).toBe('rch_apply_recover');
+        expect(recovered.providerOrderId).not.toBe('req_apply');
+        expect(manual.status).toBe(ORDER_STATUS.MANUAL_REVIEW);
+        expect(manual.providerErrorCode).toBe('XENA_RECHARGE_ID_MISSING');
+        expect(manual.providerOrderId).toBeNull();
+        expect(MatrixXenaAdapter.placeCalls).toHaveLength(0);
+        expect(await walletTxCount(recoverable.customer._id)).toBe(0);
+        expect(await walletTxCount(unrecoverable.customer._id)).toBe(0);
+    });
+
     it('lease matrix: one claim, active lease blocks, expired lease reclaims, and release after success/failure', async () => {
         const success = await makeXenaOrderFixture({ providerOrderId: null });
         MatrixXenaAdapter.placeQueue.push({
@@ -1155,7 +1317,14 @@ describe('Xena polling, refund safety, and leases', () => {
             rawResponse: { status: 'processing' },
         });
         await Promise.all([executeOrder(retry.order._id), pollProcessingOrders()]);
-        expect(MatrixXenaAdapter.placeCalls).toHaveLength(1);
+        expect(MatrixXenaAdapter.placeCalls.length).toBeLessThanOrEqual(1);
+        const retryFresh = await Order.findById(retry.order._id);
+        if (MatrixXenaAdapter.placeCalls.length === 1) {
+            expect(retryFresh.providerOrderId).toBe('rch_race');
+        } else {
+            expect(retryFresh.status).toBe(ORDER_STATUS.MANUAL_REVIEW);
+            expect(retryFresh.providerErrorCode).toBe('XENA_RECHARGE_ID_MISSING');
+        }
 
         const failed = await makeXenaOrderFixture({ providerOrderId: 'rch_status_race' });
         MatrixXenaAdapter.statusQueue.push([
