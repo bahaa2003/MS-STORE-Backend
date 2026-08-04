@@ -457,6 +457,15 @@ const getCanonicalOrderField = () => ({
     type: 'text',
     required: true,
     verifiable: true,
+    validation: {
+        digitsOnly: true,
+        minLength: 1,
+        maxLength: 50,
+    },
+    verification: {
+        required: true,
+        type: 'xena_target',
+    },
     isActive: true,
     sortOrder: 0,
 });
@@ -467,7 +476,23 @@ const mergeXenaProductBehavior = (productLike) => {
     productLike.orderFields = hasField
         ? existingFields.map((field) => (
             field?.key === XENA_TARGET_FIELD_KEY
-                ? { ...field, required: true, verifiable: true, isActive: field.isActive !== false }
+                ? {
+                    ...field,
+                    required: true,
+                    verifiable: true,
+                    validation: {
+                        ...(field.validation || {}),
+                        digitsOnly: true,
+                        minLength: 1,
+                        maxLength: 50,
+                    },
+                    verification: {
+                        ...(field.verification || {}),
+                        required: true,
+                        type: 'xena_target',
+                    },
+                    isActive: field.isActive !== false,
+                }
                 : field
         ))
         : [...existingFields, getCanonicalOrderField()];

@@ -336,6 +336,33 @@ const productSchema = new mongoose.Schema(
                         default: false,
                     },
 
+                    validation: {
+                        digitsOnly: {
+                            type: Boolean,
+                            default: false,
+                        },
+                        minLength: {
+                            type: Number,
+                            default: null,
+                        },
+                        maxLength: {
+                            type: Number,
+                            default: null,
+                        },
+                    },
+
+                    verification: {
+                        required: {
+                            type: Boolean,
+                            default: false,
+                        },
+                        type: {
+                            type: String,
+                            trim: true,
+                            default: null,
+                        },
+                    },
+
                     /**
                      * Allowed options for type=select.
                      * Backend validation rejects any value not in this list.

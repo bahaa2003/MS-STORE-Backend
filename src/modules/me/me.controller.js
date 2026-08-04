@@ -17,6 +17,7 @@ const catchAsync = require('../../shared/utils/catchAsync');
 const { NotFoundError, BusinessRuleError } = require('../../shared/errors/AppError');
 const xenaSvc = require('../providers/xena.service');
 const { XENA_DYNAMIC_PRODUCT_ID } = require('../providers/xena.constants');
+const { sanitizeProductForCustomer, sanitizeProductsForCustomer } = require('../products/product.serializer');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -223,7 +224,8 @@ const getProducts = catchAsync(async (req, res) => {
             .sort({ name: 1 })
             .skip(skip)
             .limit(limit)
-            .select('-providerProduct -orderFields')
+            .populate('provider', 'name slug')
+            .populate('providerProduct', 'externalProductId')
             .lean(),
         Product.countDocuments(filter),
     ]);
@@ -250,7 +252,7 @@ const getProducts = catchAsync(async (req, res) => {
         };
     });
 
-    sendPaginated(res, converted, { page, limit, total, pages: Math.ceil(total / limit) }, 'Products retrieved.');
+    sendPaginated(res, sanitizeProductsForCustomer(converted), { page, limit, total, pages: Math.ceil(total / limit) }, 'Products retrieved.');
 });
 
 /**
@@ -264,7 +266,8 @@ const getProduct = catchAsync(async (req, res) => {
     const { calculateFinalPrice } = require('../orders/pricing.service');
 
     const product = await Product.findOne({ _id: req.params.id, isActive: true, deletedAt: null })
-        .select('-providerProduct')
+        .populate('provider', 'name slug')
+        .populate('providerProduct', 'externalProductId')
         .lean();
 
     if (!product) throw new NotFoundError('Product');
@@ -283,12 +286,12 @@ const getProduct = catchAsync(async (req, res) => {
     // ── 3. Pipeline: Base → Markup → Currency ─────────────────────────────────
     const markedUpUSD = calculateFinalPrice(product.basePrice, markupPercentage);
 
-    sendSuccess(res, {
+    sendSuccess(res, sanitizeProductForCustomer({
         ...product,
         markedUpPriceUSD: markedUpUSD,
         displayPrice: usdToLocal(markedUpUSD, rate),
         displayCurrency: userCurrency,
-    });
+    }));
 });
 
 const verifyProductTarget = catchAsync(async (req, res) => {

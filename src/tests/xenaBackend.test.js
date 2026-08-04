@@ -16,6 +16,7 @@ const { AuditLog } = require('../modules/audit/audit.model');
 const { createOrder } = require('../modules/orders/order.service');
 const { inspectXenaProcessingOrders } = require('../../scripts/reconciliation/fix-xena-processing-orders');
 const { decryptCredential, isEncrypted } = require('../modules/providers/providerCredentialCrypto');
+const { sanitizeProductForCustomer } = require('../modules/products/product.serializer');
 const jwt = require('jsonwebtoken');
 const config = require('../config/config');
 const app = require('../app');
@@ -784,7 +785,7 @@ describe('Xena admin HTTP connection lifecycle', () => {
 });
 
 describe('Xena order safety', () => {
-    const makeXenaProduct = async () => {
+    const makeXenaProduct = async (overrides = {}) => {
         const provider = await makeXenaProvider();
         const providerProduct = await ProviderProduct.create({
             provider: provider._id,
@@ -801,13 +802,24 @@ describe('Xena order safety', () => {
             minQty: 1,
             maxQty: 100,
             isActive: true,
-            executionType: 'manual',
+            executionType: overrides.executionType || 'manual',
             provider: provider._id,
             providerProduct: providerProduct._id,
             orderFields: [xenaSvc.getCanonicalOrderField()],
             providerMapping: { target_uid: 'targetUid' },
+            ...(overrides.product || {}),
         });
         return { provider, providerProduct, product };
+    };
+
+    const customerToken = async () => {
+        const { customer } = await createCustomerWithGroup({ walletBalance: 100, creditLimit: 0 }, { percentage: 0 });
+        const token = jwt.sign(
+            { id: customer._id.toString(), role: 'CUSTOMER', status: 'ACTIVE' },
+            config.jwt.secret,
+            { expiresIn: '1h' }
+        );
+        return { customer, token };
     };
 
     it('verifies Xena target before wallet debit and order creation', async () => {
@@ -837,6 +849,171 @@ describe('Xena order safety', () => {
 
         expect(verifySpy).toHaveBeenCalledTimes(2);
         expect(order.totalPrice).toBe('2');
+        expect((await freshUser(customer._id)).walletBalance).toBe(98);
+        verifySpy.mockRestore();
+    });
+
+    it('keeps public customer product DTO verification metadata without sensitive Xena data', async () => {
+        const { product } = await makeXenaProduct();
+
+        const hydrated = await Product.findById(product._id).populate('provider').populate('providerProduct');
+        const serialized = sanitizeProductForCustomer(hydrated);
+        expect(serialized).toBeTruthy();
+        expect(serialized.providerCode).toBe(XENA_PROVIDER_SLUG);
+        expect(serialized.provider).toBeUndefined();
+        expect(serialized.providerProduct).toBeUndefined();
+        expect(JSON.stringify(serialized)).not.toContain('connectionId');
+        expect(JSON.stringify(serialized)).not.toContain('xena-token');
+
+        const targetField = serialized.orderFields.find((field) => field.key === 'target_uid');
+        expect(targetField).toMatchObject({
+            key: 'target_uid',
+            label: 'Xena ID',
+            required: true,
+            type: 'text',
+            verifiable: true,
+            validation: {
+                digitsOnly: true,
+                minLength: 1,
+                maxLength: 50,
+            },
+            verification: {
+                required: true,
+                type: 'xena_target',
+            },
+        });
+    });
+
+    it('rejects missing and malformed customer Xena targets before wallet mutation', async () => {
+        const { customer } = await createCustomerWithGroup({ walletBalance: 100, creditLimit: 0 }, { percentage: 0 });
+        const { product } = await makeXenaProduct({ executionType: 'automatic' });
+
+        for (const orderFieldsValues of [
+            {},
+            { target_uid: 'abc123' },
+        ]) {
+            await expect(createOrder({
+                userId: customer._id,
+                productId: product._id,
+                quantity: 2,
+                orderFieldsValues,
+            })).rejects.toMatchObject({
+                code: expect.stringMatching(/INVALID_ORDER_FIELDS|INVALID_XENA_TARGET_UID/),
+            });
+        }
+
+        expect(FakeXenaAdapter.verifyTargetCalls).toHaveLength(0);
+        expect(await Order.countDocuments()).toBe(0);
+        expect(await WalletTransaction.countDocuments({ userId: customer._id })).toBe(0);
+        expect((await freshUser(customer._id)).walletBalance).toBe(100);
+    });
+
+    it('rejects invalid customer Xena target before order creation, debit, or provider placement', async () => {
+        registerAdapter(XENA_PROVIDER_SLUG, MatrixXenaAdapter);
+        registerAdapter('xena recharge', MatrixXenaAdapter);
+        const { customer } = await createCustomerWithGroup({ walletBalance: 100, creditLimit: 0 }, { percentage: 0 });
+        const { product } = await makeXenaProduct({ executionType: 'automatic' });
+        FakeXenaAdapter.verifyTargetError = new XenaApiError('User not found', {
+            statusCode: 404,
+            code: 'USER_NOT_FOUND',
+        });
+
+        await expect(createOrder({
+            userId: customer._id,
+            productId: product._id,
+            quantity: 2,
+            orderFieldsValues: {
+                target_uid: '001234',
+                verified: true,
+                connectionId: 'browser-tamper',
+            },
+        })).rejects.toMatchObject({ code: 'INVALID_ORDER_FIELDS' });
+
+        await expect(createOrder({
+            userId: customer._id,
+            productId: product._id,
+            quantity: 2,
+            orderFieldsValues: { target_uid: '001234' },
+        })).rejects.toMatchObject({ code: 'XENA_TARGET_INVALID' });
+
+        expect(MatrixXenaAdapter.verifyTargetCalls[0]).toMatchObject({ targetUid: '001234' });
+        expect(MatrixXenaAdapter.verifyTargetCalls[0]).not.toHaveProperty('connectionId');
+        expect(MatrixXenaAdapter.placeCalls).toHaveLength(0);
+        expect(await Order.countDocuments()).toBe(0);
+        expect(await WalletTransaction.countDocuments({ userId: customer._id })).toBe(0);
+        expect((await freshUser(customer._id)).walletBalance).toBe(100);
+        FakeXenaAdapter.verifyTargetError = null;
+    });
+
+    it.each([
+        ['reauth', new XenaApiError('Session expired', { statusCode: 409, code: 'REAUTHENTICATION_REQUIRED' }), 'XENA_REAUTHENTICATION_REQUIRED'],
+        ['provider auth', new XenaApiError('Unauthorized', { statusCode: 401, code: 'XENA_UNAUTHORIZED' }), 'XENA_PROVIDER_AUTH_FAILED'],
+        ['rate limited', new XenaApiError('Rate limit', { statusCode: 429, code: 'XENA_RATE_LIMIT' }), 'XENA_RATE_LIMITED'],
+        ['timeout', new XenaApiError('Timeout', { code: 'ECONNABORTED', retryable: true, uncertain: true }), 'XENA_VERIFICATION_UNAVAILABLE'],
+    ])('blocks %s verification failure before debit', async (_label, error, expectedCode) => {
+        const { customer } = await createCustomerWithGroup({ walletBalance: 100, creditLimit: 0 }, { percentage: 0 });
+        const { product } = await makeXenaProduct();
+        FakeXenaAdapter.verifyTargetError = error;
+
+        await expect(createOrder({
+            userId: customer._id,
+            productId: product._id,
+            quantity: 2,
+            orderFieldsValues: { target_uid: '001234' },
+        })).rejects.toMatchObject({ code: expectedCode });
+
+        expect(await Order.countDocuments()).toBe(0);
+        expect(await WalletTransaction.countDocuments({ userId: customer._id })).toBe(0);
+        expect((await freshUser(customer._id)).walletBalance).toBe(100);
+        FakeXenaAdapter.verifyTargetError = null;
+    });
+
+    it('preserves exact target_uid string with leading zeroes on valid order flow', async () => {
+        const { customer } = await createCustomerWithGroup({ walletBalance: 100, creditLimit: 0 }, { percentage: 0 });
+        const { product } = await makeXenaProduct();
+
+        const { order } = await createOrder({
+            userId: customer._id,
+            productId: product._id,
+            quantity: 2,
+            orderFieldsValues: { target_uid: '001234' },
+        });
+
+        expect(FakeXenaAdapter.verifyTargetCalls[0].targetUid).toBe('001234');
+        expect(typeof FakeXenaAdapter.verifyTargetCalls[0].targetUid).toBe('string');
+        expect(order.customerInput.values.target_uid).toBe('001234');
+        expect(typeof order.customerInput.values.target_uid).toBe('string');
+        expect((await freshUser(customer._id)).walletBalance).toBe(98);
+    });
+
+    it('does not require Xena verification for non-Xena products', async () => {
+        const { customer } = await createCustomerWithGroup({ walletBalance: 100, creditLimit: 0 }, { percentage: 0 });
+        const product = await Product.create({
+            name: 'Manual Product',
+            basePrice: '1',
+            minQty: 1,
+            maxQty: 100,
+            isActive: true,
+            executionType: 'manual',
+            orderFields: [{
+                id: 'player_id',
+                key: 'player_id',
+                label: 'Player ID',
+                type: 'text',
+                required: true,
+                isActive: true,
+            }],
+        });
+
+        const { order } = await createOrder({
+            userId: customer._id,
+            productId: product._id,
+            quantity: 2,
+            orderFieldsValues: { player_id: 'abc123' },
+        });
+
+        expect(FakeXenaAdapter.verifyTargetCalls).toHaveLength(0);
+        expect(order.customerInput.values.player_id).toBe('abc123');
         expect((await freshUser(customer._id)).walletBalance).toBe(98);
     });
 });

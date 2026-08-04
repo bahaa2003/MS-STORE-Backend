@@ -3,6 +3,7 @@
 const productService = require('./product.service');
 const { sendSuccess, sendCreated, sendPaginated } = require('../../shared/utils/apiResponse');
 const catchAsync = require('../../shared/utils/catchAsync');
+const { enrichPublicProductContract } = require('./product.serializer');
 
 // ─── Sensitive fields that must NEVER reach non-admin clients ─────────────────
 
@@ -37,6 +38,7 @@ const SENSITIVE_FIELDS = [
 const sanitizeProductForCustomer = (product) => {
     if (!product) return product;
     const obj = typeof product.toObject === 'function' ? product.toObject() : { ...product };
+    enrichPublicProductContract(obj);
     for (const field of SENSITIVE_FIELDS) {
         delete obj[field];
     }

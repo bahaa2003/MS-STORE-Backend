@@ -176,6 +176,8 @@ const validateOrderFields = (orderFields = [], orderFieldsValues = {}) => {
             key: f.key,
             label: f.label,
             type: f.type,
+            required: f.required !== false,
+            verifiable: f.verifiable === true,
         };
         if (f.type === FIELD_TYPES.SELECT && Array.isArray(f.options)) {
             snap.options = f.options;
@@ -185,6 +187,12 @@ const validateOrderFields = (orderFields = [], orderFieldsValues = {}) => {
         if (f.type === FIELD_TYPES.NUMBER) {
             if (f.min !== null && f.min !== undefined) snap.min = f.min;
             if (f.max !== null && f.max !== undefined) snap.max = f.max;
+        }
+        if (f.validation && typeof f.validation === 'object') {
+            snap.validation = { ...f.validation };
+        }
+        if (f.verification && typeof f.verification === 'object') {
+            snap.verification = { ...f.verification };
         }
         return snap;
     });
