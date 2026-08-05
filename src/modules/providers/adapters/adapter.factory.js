@@ -85,6 +85,11 @@ const registry = new Map([
     ['sultancard', AlkasrVipAdapter],  // compact
 
 
+        // ── goldenx-coin (Uses Alkasr Adapter) ─────────────────────────────────────
+    ['goldenx-coin', AlkasrVipAdapter], // slug
+    ['goldenx coin', AlkasrVipAdapter], // name
+    ['goldenxcoin', AlkasrVipAdapter],  // compact
+
     // ── Default test / dev adapter ────────────────────────────────────────────
     ['xena-recharge', XenaRechargeAdapter],
     ['xena recharge', XenaRechargeAdapter],
