@@ -323,6 +323,9 @@ const publishFromProviderProduct = async ({
     if (pp.externalProductId === XENA_DYNAMIC_PRODUCT_ID) {
         mergeXenaProductBehavior(productData);
     }
+    if (pp.externalProductId === COIN_RECHARGE_DYNAMIC_PRODUCT_ID) {
+        mergeCoinRechargeProductBehavior(productData);
+    }
 
     return Product.create(productData);
 };

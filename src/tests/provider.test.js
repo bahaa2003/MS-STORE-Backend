@@ -71,6 +71,7 @@ const { MockProviderAdapter } = require('../modules/providers/adapters/mock.adap
 const { getAdapter, registerAdapter } = require('../modules/providers/adapters/adapter.factory');
 const syncService = require('../modules/providers/sync.service');
 const providerService = require('../modules/providers/provider.service');
+const productService = require('../modules/products/product.service');
 
 const {
     connectTestDB,
@@ -630,6 +631,46 @@ describe('[6] Admin Publish Flow', () => {
 
         expect(product.minQty).toBe(2);    // from raw data
         expect(product.maxQty).toBe(50);   // from raw data
+    });
+
+    it('createProductFromProvider applies the coin-recharge synthetic target contract', async () => {
+        const coinProviderProduct = await ProviderProduct.create({
+            provider: provider._id,
+            externalProductId: 'coin-recharge-dynamic',
+            rawName: 'Dynamic Coin Recharge',
+            rawPrice: '0.02',
+            minQty: 10,
+            maxQty: 100000,
+            isActive: true,
+        });
+
+        const product = await productService.createProductFromProvider({
+            providerProductId: coinProviderProduct._id,
+            name: 'Coin recharge',
+            executionType: 'manual',
+        });
+        const persisted = await Product.findById(product._id);
+
+        expect(persisted.executionType).toBe('automatic');
+        expect(persisted.orderFields).toHaveLength(1);
+        expect(persisted.orderFields[0]).toMatchObject({
+            id: 'target_uid', key: 'target_uid', required: true, verifiable: true,
+            validation: { digitsOnly: true, minLength: 1, maxLength: 50 },
+            verification: { required: true, type: 'coin_recharge_target' },
+        });
+        expect(persisted.providerMapping.get('target_uid')).toBe('toUserId');
+    });
+
+    it('createProductFromProvider leaves an ordinary provider product unchanged', async () => {
+        const product = await productService.createProductFromProvider({
+            providerProductId: providerProduct._id,
+            name: 'Ordinary provider product',
+            executionType: 'manual',
+        });
+
+        expect(product.executionType).toBe('manual');
+        expect(product.orderFields).toHaveLength(0);
+        expect(Object.fromEntries(product.providerMapping)).toEqual({});
     });
 
     it('update: manual→sync transition snaps basePrice to current rawPrice', async () => {
