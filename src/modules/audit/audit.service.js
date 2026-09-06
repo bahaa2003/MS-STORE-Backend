@@ -9,7 +9,7 @@ const { ALL_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('./audit.constants');
 const REDACTED_KEYS = new Set([
     'password', 'passwordhash', 'hashedpassword',
     'token', 'accesstoken', 'refreshtoken', 'jwt',
-    'secret', 'apikey', 'privatekey', 'creditcard',
+    'secret', 'secretkey', 'secret_key', 'secret-key', 'apikey', 'privatekey', 'creditcard',
     'cvv', 'ssn',
 ]);
 

@@ -14,10 +14,12 @@ const mongoose = require('mongoose');
 const { User, USER_STATUS } = require('../modules/users/user.model');
 const { WalletTransaction } = require('../modules/wallet/walletTransaction.model');
 const { Setting, seedDefaultSettings } = require('../modules/admin/setting.model');
+const { Order, ORDER_STATUS, ORDER_EXECUTION_TYPES } = require('../modules/orders/order.model');
 
 const adminUsersService = require('../modules/admin/admin.users.service');
 const adminWalletService = require('../modules/admin/admin.wallet.service');
 const adminSettingService = require('../modules/admin/admin.settings.service');
+const adminOrdersService = require('../modules/admin/admin.orders.service');
 const { validateBody, schemas } = require('../modules/admin/admin.validation');
 
 const {
@@ -27,6 +29,7 @@ const {
     createGroup,
     createCustomer,
     createAdmin,
+    createProduct,
     USER_STATUS: _STATUS,
 } = require('./testHelpers');
 
@@ -43,6 +46,29 @@ const setup = async () => {
     const admin = await createAdmin({ groupId: group._id });
     const customer = await createCustomer({ groupId: group._id });
     return { group, admin, customer };
+};
+
+const createCoinRechargeManualReviewOrder = async (customer, group) => {
+    const product = await createProduct({ executionType: ORDER_EXECUTION_TYPES.AUTOMATIC });
+    return Order.create({
+        orderNumber: 800000000 + Math.floor(Math.random() * 100000000),
+        userId: customer._id,
+        productId: product._id,
+        quantity: 1,
+        unitPrice: '50',
+        totalPrice: '50',
+        basePriceSnapshot: '50',
+        markupPercentageSnapshot: 0,
+        finalPriceCharged: '50',
+        groupIdSnapshot: group._id,
+        walletDeducted: 50,
+        creditUsedAmount: '0',
+        chargedAmount: 50,
+        currency: 'USD',
+        status: ORDER_STATUS.MANUAL_REVIEW,
+        executionType: ORDER_EXECUTION_TYPES.AUTOMATIC,
+        providerCode: 'coin-recharge',
+    });
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -334,7 +360,91 @@ describe('[3] Admin Settings Service', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// [4] Validation Schemas
+// [4] Coin-recharge manual-review safety
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('[4] Coin-recharge manual-review safety', () => {
+    it('blocks every generic state-changing service path while coin recharge is in MANUAL_REVIEW', async () => {
+        const { group, admin, customer } = await setup();
+        const order = await createCoinRechargeManualReviewOrder(customer, group);
+        const expectBlocked = { code: 'COIN_RECHARGE_MANUAL_REVIEW_REQUIRES_RESOLUTION' };
+
+        await expect(adminOrdersService.refundOrder(order._id, admin._id)).rejects.toMatchObject(expectBlocked);
+        await expect(adminOrdersService.completeOrder(order._id, admin._id)).rejects.toMatchObject(expectBlocked);
+        await expect(adminOrdersService.updateOrderStatus(order._id, 'completed', admin._id)).rejects.toMatchObject(expectBlocked);
+        await expect(adminOrdersService.retryOrder(order._id, admin._id)).rejects.toMatchObject(expectBlocked);
+        await expect(adminOrdersService.syncOrderProviderStatus(order._id, admin._id)).rejects.toMatchObject(expectBlocked);
+    });
+
+    it('dedicated delivered resolution atomically completes without a wallet mutation', async () => {
+        const { group, admin, customer } = await setup();
+        const order = await createCoinRechargeManualReviewOrder(customer, group);
+        const walletBefore = (await User.findById(customer._id)).walletBalance;
+
+        const updated = await adminOrdersService.resolveCoinRechargeManualReview(order._id, admin._id, {
+            resolution: 'delivered', reason: 'Supplier evidence confirmed delivery',
+        });
+
+        expect(updated.status).toBe(ORDER_STATUS.COMPLETED);
+        expect(updated.refunded).toBe(false);
+        expect((await User.findById(customer._id)).walletBalance).toBe(walletBefore);
+        expect(await WalletTransaction.countDocuments({ userId: customer._id, type: 'REFUND' })).toBe(0);
+    });
+
+    it('dedicated refund resolution refunds once and cannot be resolved again', async () => {
+        const { group, admin, customer } = await setup();
+        const order = await createCoinRechargeManualReviewOrder(customer, group);
+        const walletBefore = (await User.findById(customer._id)).walletBalance;
+
+        const updated = await adminOrdersService.resolveCoinRechargeManualReview(order._id, admin._id, {
+            resolution: 'refund', reason: 'Supplier evidence confirmed no delivery',
+        });
+
+        expect(updated.status).toBe(ORDER_STATUS.FAILED);
+        expect(updated.refunded).toBe(true);
+        expect((await User.findById(customer._id)).walletBalance).toBe(walletBefore + 50);
+        expect(await WalletTransaction.countDocuments({ userId: customer._id, type: 'REFUND' })).toBe(1);
+        await expect(adminOrdersService.resolveCoinRechargeManualReview(order._id, admin._id, {
+            resolution: 'refund', reason: 'Attempt a second refund',
+        })).rejects.toMatchObject({ code: 'COIN_RECHARGE_MANUAL_REVIEW_ALREADY_RESOLVED' });
+    });
+
+    it('concurrent delivered and refund resolutions have exactly one winner and no contradictory financial state', async () => {
+        const { group, admin, customer } = await setup();
+        const order = await createCoinRechargeManualReviewOrder(customer, group);
+        const walletBefore = (await User.findById(customer._id)).walletBalance;
+
+        const outcomes = await Promise.allSettled([
+            adminOrdersService.resolveCoinRechargeManualReview(order._id, admin._id, {
+                resolution: 'delivered', reason: 'Delivered according to evidence',
+            }),
+            adminOrdersService.resolveCoinRechargeManualReview(order._id, admin._id, {
+                resolution: 'refund', reason: 'Refund according to evidence',
+            }),
+        ]);
+
+        expect(outcomes.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+        expect(outcomes.filter(({ status }) => status === 'rejected')[0].reason).toMatchObject({
+            code: 'COIN_RECHARGE_MANUAL_REVIEW_ALREADY_RESOLVED',
+        });
+
+        const fresh = await Order.findById(order._id);
+        const refunds = await WalletTransaction.countDocuments({ userId: customer._id, type: 'REFUND' });
+        if (fresh.status === ORDER_STATUS.COMPLETED) {
+            expect(fresh.refunded).toBe(false);
+            expect(refunds).toBe(0);
+            expect((await User.findById(customer._id)).walletBalance).toBe(walletBefore);
+        } else {
+            expect(fresh.status).toBe(ORDER_STATUS.FAILED);
+            expect(fresh.refunded).toBe(true);
+            expect(refunds).toBe(1);
+            expect((await User.findById(customer._id)).walletBalance).toBe(walletBefore + 50);
+        }
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// [5] Validation Schemas
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('[4] Joi Validation Schemas', () => {

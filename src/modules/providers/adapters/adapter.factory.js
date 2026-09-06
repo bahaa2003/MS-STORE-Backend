@@ -34,6 +34,7 @@ const { RoyalCrownAdapter } = require('./royalCrown.adapter');
 const { TorosfonAdapter } = require('./toros.adapter');
 const { AlkasrVipAdapter } = require('./alkasr.adapter');
 const { XenaRechargeAdapter } = require('./xena.adapter');
+const { CoinRechargeAdapter } = require('./coinRecharge.adapter');
 
 // ─── Registry ────────────────────────────────────────────────────────────────
 //
@@ -94,6 +95,9 @@ const registry = new Map([
     ['xena-recharge', XenaRechargeAdapter],
     ['xena recharge', XenaRechargeAdapter],
     ['xenarecharge', XenaRechargeAdapter],
+
+    // ── Independent non-idempotent coin recharge supplier ──────────────────
+    ['coin-recharge', CoinRechargeAdapter],
 
     ['mock', MockProviderAdapter],
 ]);

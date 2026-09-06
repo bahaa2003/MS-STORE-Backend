@@ -37,10 +37,12 @@ const { toInternalStatus, isTerminal, requiresRefund } = require('../providers/s
 const { notifyOrderCompleted, notifyOrderFailed } = require('../notifications/notification.service');
 const { XENA_PROVIDER_SLUG } = require('../providers/xena.constants');
 const { extractXenaRechargeId } = require('../providers/adapters/xena.adapter');
+const { COIN_RECHARGE_PROVIDER_SLUG } = require('../providers/coinRecharge.constants');
 
 const XENA_RECHARGE_ID_MISSING = 'XENA_RECHARGE_ID_MISSING';
 
 const isXenaOrder = (order) => String(order?.providerCode || '').toLowerCase() === XENA_PROVIDER_SLUG;
+const isCoinRechargeOrder = (order) => String(order?.providerCode || '').toLowerCase() === COIN_RECHARGE_PROVIDER_SLUG;
 
 const logXenaMissingRechargeId = (order, extra = {}) => {
     console.warn('[XenaRechargeIdMissing]', {
@@ -267,6 +269,10 @@ const { Product } = require('../products/product.model');
  * @returns {Promise<{ order: Order, placed: boolean, refunded: boolean }>}
  */
 const executeOrder = async (orderId, provider = null, auditContext = null) => {
+    // Kept outside the crash guard: once a non-idempotent sale call begins,
+    // any later local failure must never trigger an automatic refund.
+    let nonIdempotentSaleAttempted = false;
+    let nonIdempotentOrder = null;
     // ─── TOP-LEVEL CRASH GUARD ─────────────────────────────────────────────
     // Wraps the entire function so ANY crash (parsing, DB, provider resolution)
     // marks the order FAILED + refund instead of leaving it stuck in PROCESSING.
@@ -278,6 +284,7 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
         console.error(`[Fulfillment] executeOrder: order ${orderId} not found`);
         return { order: null, placed: false, refunded: false };
     }
+    nonIdempotentOrder = order;
 
     // Guard: only attempt execution once
     if (order.status !== ORDER_STATUS.PROCESSING) {
@@ -400,6 +407,22 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
             ...mappedCustomerFields,   // ← spread translated customer fields onto params
         });
     } catch (err) {
+        if (isCoinRechargeOrder(order)) {
+            // An unexpected adapter throw occurs after invocation.  The
+            // supplier may have received the non-idempotent sale, so never
+            // pass it through the generic refund classifier.
+            nonIdempotentSaleAttempted = true;
+            result = {
+                success: false,
+                requiresManualReview: true,
+                outcomeUncertain: true,
+                providerStatus: 'Unknown',
+                providerOrderId: null,
+                errorCode: err?.code || 'COIN_RECHARGE_PLACE_ORDER_THROWN',
+                errorMessage: 'Coin recharge sale result is indeterminate.',
+                rawResponse: { errorCode: err?.code || 'COIN_RECHARGE_PLACE_ORDER_THROWN' },
+            };
+        } else {
         // Classify the error: transient (network/timeout) vs hard rejection.
         //
         // TRANSIENT → keep PROCESSING so the cron can retry later.
@@ -436,6 +459,14 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
                 errorMessage: err.message,
             };
         }
+        }
+    }
+
+    if (isCoinRechargeOrder(order) && result?.definitePreSendFailure !== true) {
+        // The adapter either completed a call or returned an indeterminate
+        // result after constructing the sale request.  Preserve this fact for
+        // the outer crash guard, but do not set it for a proven pre-send error.
+        nonIdempotentSaleAttempted = true;
     }
 
     console.log(`[Fulfillment] Provider response for order ${orderId}:`, JSON.stringify({
@@ -453,6 +484,39 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
 
     const outcomeUncertain = result.outcomeUncertain === true
         || result.rawResponse?.outcomeUncertain === true;
+
+    // This supplier has neither a provider id nor idempotent placement.  Fail
+    // closed: only a proven pre-send failure or confirmed completion may leave
+    // this branch. Every other returned shape is terminally indeterminate.
+    const isCoinRechargeConfirmedSuccess = result?.success === true
+        && String(result?.providerStatus || '').toLowerCase() === 'completed';
+    if (isCoinRechargeOrder(order)
+        && result?.definitePreSendFailure !== true
+        && !isCoinRechargeConfirmedSuccess) {
+        await Order.findByIdAndUpdate(orderId, {
+            $set: {
+                status: ORDER_STATUS.MANUAL_REVIEW,
+                providerStatus: result.providerStatus || 'Unknown',
+                providerOrderId: null,
+                providerRawResponse: result.rawResponse || null,
+                providerOutcome: 'uncertain',
+                providerErrorCode: result.errorCode ?? null,
+                providerRequestId: null,
+                providerRequestHash: null,
+                fulfillmentLockUntil: null,
+                fulfillmentLockOwner: null,
+                lastCheckedAt: new Date(),
+            },
+        });
+        createAuditLog({
+            actorId, actorRole, ipAddress, userAgent,
+            action: PROVIDER_ACTIONS.ORDER_PLACE_FAILED,
+            entityType: ENTITY_TYPES.ORDER,
+            entityId: orderId,
+            metadata: { orderId: orderId.toString(), providerCode: order.providerCode, outcome: 'uncertain', reason: result.errorCode ?? 'COIN_RECHARGE_AMBIGUOUS_SALE' },
+        });
+        return { order: await Order.findById(orderId), placed: false, refunded: false, manualReview: true };
+    }
 
     if (outcomeUncertain) {
         newStatus = ORDER_STATUS.PROCESSING;
@@ -645,6 +709,20 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
         console.error(`[Fulfillment] FATAL crash in executeOrder for ${orderId}:`, fatalErr);
 
         try {
+            if (nonIdempotentSaleAttempted && nonIdempotentOrder && isCoinRechargeOrder(nonIdempotentOrder)) {
+                await Order.findByIdAndUpdate(orderId, {
+                    $set: {
+                        status: ORDER_STATUS.MANUAL_REVIEW,
+                        providerOutcome: 'uncertain',
+                        providerErrorCode: 'COIN_RECHARGE_POST_SALE_LOCAL_FAILURE',
+                        providerRawResponse: { errorCode: 'COIN_RECHARGE_POST_SALE_LOCAL_FAILURE' },
+                        fulfillmentLockUntil: null,
+                        fulfillmentLockOwner: null,
+                        lastCheckedAt: new Date(),
+                    },
+                });
+                return { order: await Order.findById(orderId).catch(() => null), placed: false, refunded: false, manualReview: true };
+            }
             const now = new Date();
             await Order.findByIdAndUpdate(orderId, {
                 $set: {

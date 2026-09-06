@@ -28,6 +28,8 @@ const {
     XENA_DYNAMIC_PRODUCT_ID,
 } = require('../providers/xena.constants');
 const { mergeXenaProductBehavior } = require('../providers/xena.service');
+const { COIN_RECHARGE_DYNAMIC_PRODUCT_ID } = require('../providers/coinRecharge.constants');
+const { mergeCoinRechargeProductBehavior } = require('../providers/coinRecharge.service');
 const { isPositive, add } = require('../../shared/utils/decimalPrecision');
 const {
     NotFoundError,
@@ -186,6 +188,9 @@ const createProduct = async ({
         const pp = await ProviderProduct.findById(providerProduct).select('externalProductId').lean();
         if (pp?.externalProductId === XENA_DYNAMIC_PRODUCT_ID) {
             mergeXenaProductBehavior(productData);
+        }
+        if (pp?.externalProductId === COIN_RECHARGE_DYNAMIC_PRODUCT_ID) {
+            mergeCoinRechargeProductBehavior(productData);
         }
     }
 
@@ -554,4 +559,3 @@ module.exports = {
     createProductFromProvider: publishFromProviderProduct,  // prompt-specified name
     toggleProduct: toggleProductStatus,                     // prompt-specified name
 };
-

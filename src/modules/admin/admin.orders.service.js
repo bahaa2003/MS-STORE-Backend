@@ -10,11 +10,23 @@ const mongoose = require('mongoose');
 const { Order, ORDER_STATUS } = require('../orders/order.model');
 const { markOrderAsFailed, processOrderRefund } = require('../orders/order.service');
 const { forcedDebitWallet } = require('../wallet/wallet.service');
+const { refundFailedOrder } = require('../orders/orderFulfillment.service');
 const { getProviderAdapter } = require('../providers/adapters/adapter.factory');
 const { Provider } = require('../providers/provider.model');
 const { NotFoundError, BusinessRuleError } = require('../../shared/errors/AppError');
 const { createAuditLog } = require('../audit/audit.service');
 const { ADMIN_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('../audit/audit.constants');
+const { COIN_RECHARGE_PROVIDER_SLUG } = require('../providers/coinRecharge.constants');
+
+const assertGenericCoinRechargeManualReviewBlocked = (order) => {
+    if (String(order?.providerCode || '').toLowerCase() === COIN_RECHARGE_PROVIDER_SLUG
+        && order?.status === ORDER_STATUS.MANUAL_REVIEW) {
+        throw new BusinessRuleError(
+            'Coin recharge MANUAL_REVIEW orders must be resolved through the dedicated resolution workflow.',
+            'COIN_RECHARGE_MANUAL_REVIEW_REQUIRES_RESOLUTION'
+        );
+    }
+};
 
 const resolveAuditContext = (adminId, auditContext = null) => ({
     actorId: auditContext?.actorId ?? adminId,
@@ -133,11 +145,17 @@ const retryOrder = async (orderId, adminId, auditContext = null) => {
 
     if (!order) throw new NotFoundError('Order');
 
+    assertGenericCoinRechargeManualReviewBlocked(order);
+
     if (order.status !== ORDER_STATUS.FAILED) {
         throw new BusinessRuleError(
             `Only FAILED orders can be retried. Current status: ${order.status}`,
             'INVALID_STATUS_FOR_RETRY'
         );
+    }
+
+    if (String(order.providerCode || '').toLowerCase() === COIN_RECHARGE_PROVIDER_SLUG) {
+        throw new BusinessRuleError('Coin recharge sales are non-idempotent and cannot be re-placed. Resolve through manual review.', 'COIN_RECHARGE_RETRY_FORBIDDEN');
     }
 
     const providerDoc = order.productId?.provider;
@@ -198,6 +216,8 @@ const refundOrder = async (orderId, adminId, remains = 0, auditContext = null) =
     const order = await Order.findById(orderId);
     if (!order) throw new NotFoundError('Order');
 
+    assertGenericCoinRechargeManualReviewBlocked(order);
+
     // Guard: already refunded
     if (order.refunded === true) {
         throw new BusinessRuleError('A refund has already been issued for this order.', 'ALREADY_REFUNDED');
@@ -257,8 +277,10 @@ const refundOrder = async (orderId, adminId, remains = 0, auditContext = null) =
  */
 const syncOrderProviderStatus = async (orderId, adminId, auditContext = null) => {
     const ctx = resolveAuditContext(adminId, auditContext);
-    const order = await Order.findById(orderId).populate('product');
+    const order = await Order.findById(orderId).populate('productId');
     if (!order) throw new NotFoundError('Order');
+
+    assertGenericCoinRechargeManualReviewBlocked(order);
 
     if (!order.providerOrderId) {
         throw new BusinessRuleError(
@@ -268,7 +290,7 @@ const syncOrderProviderStatus = async (orderId, adminId, auditContext = null) =>
     }
 
     // Resolve the provider from the product's provider ref
-    const providerId = order.product?.provider;
+    const providerId = order.productId?.provider;
     if (!providerId) {
         throw new BusinessRuleError(
             'This order\'s product has no linked provider.',
@@ -380,6 +402,8 @@ const completeOrder = async (orderId, adminId, auditContext = null) => {
     const order = await Order.findById(orderId);
     if (!order) throw new NotFoundError('Order');
 
+    assertGenericCoinRechargeManualReviewBlocked(order);
+
     // Hard stop — already completed, nothing to do
     if (order.status === ORDER_STATUS.COMPLETED) {
         throw new BusinessRuleError('Order is already completed.', 'ALREADY_COMPLETED');
@@ -437,6 +461,88 @@ const completeOrder = async (orderId, adminId, auditContext = null) => {
     return order;
 };
 
+// Resolves only coin-recharge MANUAL_REVIEW orders. This is intentionally
+// separate from generic retry/refund controls because the provider offers no
+// idempotency key, provider order ID, or authoritative status endpoint.
+const resolveCoinRechargeManualReview = async (orderId, adminId, { resolution, reason, auditContext = null } = {}) => {
+    const ctx = resolveAuditContext(adminId, auditContext);
+    const note = String(reason || '').trim();
+    if (note.length < 3) throw new BusinessRuleError('A manual-review reason is required.', 'MANUAL_REVIEW_REASON_REQUIRED');
+    if (!['delivered', 'refund'].includes(resolution)) {
+        throw new BusinessRuleError('Invalid manual-review resolution.', 'INVALID_MANUAL_REVIEW_RESOLUTION');
+    }
+
+    const claimFilter = {
+        _id: orderId,
+        providerCode: COIN_RECHARGE_PROVIDER_SLUG,
+        status: ORDER_STATUS.MANUAL_REVIEW,
+        refunded: { $ne: true },
+    };
+    const claimed = await Order.findOneAndUpdate(
+        claimFilter,
+        { $set: resolution === 'delivered'
+            ? { status: ORDER_STATUS.COMPLETED, rejectionReason: null }
+            : { status: ORDER_STATUS.FAILED, rejectionReason: note, failedAt: new Date() } },
+        { new: true }
+    );
+
+    if (!claimed) {
+        const existing = await Order.findById(orderId).select('providerCode status');
+        if (!existing) throw new NotFoundError('Order');
+        if (String(existing.providerCode || '').toLowerCase() !== COIN_RECHARGE_PROVIDER_SLUG) {
+            throw new BusinessRuleError('This resolution is only available for coin recharge orders.', 'NOT_COIN_RECHARGE_ORDER');
+        }
+        throw new BusinessRuleError('This coin recharge manual review was already resolved by another action.', 'COIN_RECHARGE_MANUAL_REVIEW_ALREADY_RESOLVED');
+    }
+
+    const previousStatus = ORDER_STATUS.MANUAL_REVIEW;
+    let refundOccurred = false;
+    if (resolution === 'delivered') {
+        // CAS already committed MANUAL_REVIEW -> COMPLETED. No wallet change.
+    } else {
+        try {
+            refundOccurred = await refundFailedOrder(claimed);
+            if (refundOccurred !== true) {
+                const fresh = await Order.findById(orderId).select('refunded');
+                if (fresh?.refunded !== true) {
+                    await Order.findOneAndUpdate(
+                        { _id: orderId, providerCode: COIN_RECHARGE_PROVIDER_SLUG, status: ORDER_STATUS.FAILED, refunded: { $ne: true } },
+                        { $set: { status: ORDER_STATUS.MANUAL_REVIEW, rejectionReason: null, failedAt: null } }
+                    );
+                }
+                throw new BusinessRuleError('Coin recharge refund could not be confirmed. The order remains in manual review.', 'COIN_RECHARGE_REFUND_NOT_CONFIRMED');
+            }
+        } catch (refundErr) {
+            // refundFailedOrder clears its CAS flag when its wallet transaction
+            // fails. Restore only when the fresh state proves no refund occurred.
+            const fresh = await Order.findById(orderId).select('refunded');
+            if (fresh && fresh.refunded !== true) {
+                await Order.findOneAndUpdate(
+                    { _id: orderId, providerCode: COIN_RECHARGE_PROVIDER_SLUG, status: ORDER_STATUS.FAILED, refunded: false },
+                    { $set: { status: ORDER_STATUS.MANUAL_REVIEW, rejectionReason: null, failedAt: null } }
+                );
+            }
+            throw refundErr;
+        }
+    }
+    const updated = await Order.findById(orderId);
+    createAuditLog({
+        actorId: ctx.actorId,
+        actorRole: ctx.actorRole,
+        action: resolution === 'delivered' ? ADMIN_ACTIONS.ORDER_COMPLETED : ADMIN_ACTIONS.ORDER_REFUNDED,
+        entityType: ENTITY_TYPES.ORDER,
+        entityId: claimed._id,
+        metadata: {
+            event: 'COIN_RECHARGE_MANUAL_REVIEW_RESOLVED', orderId: claimed._id.toString(), providerCode: claimed.providerCode,
+            previousStatus, finalStatus: updated.status, resolution, reason: note, actor: String(ctx.actorId || ''),
+            resolvedAt: new Date().toISOString(), refundOccurred, refundAmount: refundOccurred ? Number(claimed.chargedAmount || claimed.walletDeducted || 0) : 0,
+        },
+        ipAddress: ctx.ipAddress,
+        userAgent: ctx.userAgent,
+    });
+    return updated;
+};
+
 // ─── Unified Status Update ────────────────────────────────────────────────────
 
 /**
@@ -458,6 +564,10 @@ const completeOrder = async (orderId, adminId, auditContext = null) => {
  * @returns {Promise<Order>}
  */
 const updateOrderStatus = async (orderId, status, adminId, { rejectionReason, auditContext } = {}) => {
+    const currentOrder = await Order.findById(orderId).select('providerCode status');
+    if (!currentOrder) throw new NotFoundError('Order');
+    assertGenericCoinRechargeManualReviewBlocked(currentOrder);
+
     const normalised = String(status || '').trim().toLowerCase();
 
     if (['completed', 'approved'].includes(normalised)) {
@@ -485,4 +595,4 @@ const updateOrderStatus = async (orderId, status, adminId, { rejectionReason, au
     );
 };
 
-module.exports = { listOrders, getOrderById, retryOrder, refundOrder, syncOrderProviderStatus, completeOrder, updateOrderStatus };
+module.exports = { listOrders, getOrderById, retryOrder, refundOrder, syncOrderProviderStatus, completeOrder, resolveCoinRechargeManualReview, updateOrderStatus };

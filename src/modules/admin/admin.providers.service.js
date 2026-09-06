@@ -14,6 +14,7 @@ const { NotFoundError, BusinessRuleError, AppError } = require('../../shared/err
 const { createAuditLog } = require('../audit/audit.service');
 const { ADMIN_ACTIONS, ENTITY_TYPES, ACTOR_ROLES } = require('../audit/audit.constants');
 const { XENA_PROVIDER_SLUG } = require('../providers/xena.constants');
+const { COIN_RECHARGE_PROVIDER_SLUG } = require('../providers/coinRecharge.constants');
 
 // ─── List ──────────────────────────────────────────────────────────────────────
 
@@ -168,7 +169,31 @@ const getProviderBalance = async (id) => {
         };
     }
 
+    if (String(provider.slug || '').trim().toLowerCase() === COIN_RECHARGE_PROVIDER_SLUG) {
+        return {
+            provider: provider.name,
+            balance: balance?.balance ?? null,
+            unit: balance?.unit ?? 'coins',
+            currency: null,
+            checkedAt: balance?.checkedAt ?? null,
+            source: balance?.source ?? 'coin_recharge_live',
+        };
+    }
+
     return { provider: provider.name, balance };
+};
+
+// Evidence only: this endpoint is deliberately never used by fulfillment,
+// polling, reconciliation, refunds, or retries.
+const getCoinRechargeHistory = async (id, page = 1) => {
+    const provider = await Provider.findById(id);
+    if (!provider) throw new NotFoundError('Provider');
+    if (String(provider.slug || '').trim().toLowerCase() !== COIN_RECHARGE_PROVIDER_SLUG) {
+        throw new BusinessRuleError('Transaction history is unavailable for this provider.', 'HISTORY_UNSUPPORTED');
+    }
+    const adapter = getProviderAdapter(provider, { strict: true });
+    const history = await adapter.getTransactionHistory({ page: Number(page) || 1 });
+    return { provider: provider.name, evidenceOnly: true, ...history };
 };
 
 // ─── Get Provider Products (live from API) ─────────────────────────────────────
@@ -338,4 +363,5 @@ module.exports = {
     testProviderConnection,
     getProductPrice,
     checkProviderOrder,
+    getCoinRechargeHistory,
 };

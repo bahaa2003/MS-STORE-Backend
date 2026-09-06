@@ -175,6 +175,19 @@ const xenaProductConfigSchema = Joi.object({
     isActive: Joi.boolean().required(),
 });
 
+const coinRechargeProductConfigSchema = Joi.object({
+    name: Joi.string().trim().min(2).max(200).required(),
+    unitPrice: Joi.alternatives().try(Joi.string().trim(), Joi.number()).required(),
+    minCoins: Joi.number().integer().positive().max(Number.MAX_SAFE_INTEGER).required(),
+    maxCoins: Joi.number().integer().positive().max(Number.MAX_SAFE_INTEGER).min(Joi.ref('minCoins')).required(),
+    isActive: Joi.boolean().required(),
+});
+
+const coinRechargeResolutionSchema = Joi.object({
+    resolution: Joi.string().valid('delivered', 'refund').required(),
+    reason: Joi.string().trim().min(3).max(500).required(),
+});
+
 // ─── Order schemas ────────────────────────────────────────────────────────────
 
 const listOrdersQuery = Joi.object({
@@ -345,6 +358,8 @@ module.exports = {
         xenaChallenge: xenaChallengeSchema,
         xenaVerify: xenaVerifySchema,
         xenaProductConfig: xenaProductConfigSchema,
+        coinRechargeProductConfig: coinRechargeProductConfigSchema,
+        coinRechargeResolution: coinRechargeResolutionSchema,
         // Orders
         listOrdersQuery,
         updateOrderStatus: updateOrderStatusSchema,

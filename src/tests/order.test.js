@@ -21,6 +21,8 @@ const mongoose = require('mongoose');
 const orderService = require('../modules/orders/order.service');
 const globalErrorHandler = require('../shared/errors/errorHandler');
 const { WalletTransaction } = require('../modules/wallet/walletTransaction.model');
+const { Provider } = require('../modules/providers/provider.model');
+const { ProviderProduct } = require('../modules/providers/providerProduct.model');
 const { Order } = require('../modules/orders/order.model');
 const {
     ensureOrderIdempotencyIndex,
@@ -152,6 +154,49 @@ describe('Manual product costPrice profit', () => {
         expect(Number(order.basePriceSnapshot)).toBe(100);
         expect(Number(order.finalPriceCharged)).toBe(100);
         expect(Number(order.profitUsd)).toBeCloseTo(60, 6);
+    });
+});
+
+describe('Coin-recharge quantity boundary', () => {
+    it('preserves legacy parseInt quantity behavior for an established non-coin product', async () => {
+        const customer = await createCustomer({ groupId: defaultGroup._id, walletBalance: 100 });
+        const product = await createProduct({ basePrice: 10, minQty: 1, maxQty: 10 });
+
+        const { order } = await placeOrder({ userId: customer._id, productId: product._id, quantity: '2coins' });
+
+        expect(order.quantity).toBe(2);
+        expect((await freshUser(customer._id)).walletBalance).toBe(80);
+    });
+
+    it.each(['1e2', '9007199254740992'])('rejects coin quantity %s before creating an order or debiting the wallet', async (quantity) => {
+        const customer = await createCustomer({ groupId: defaultGroup._id, walletBalance: 100 });
+        const coinProvider = await Provider.create({
+            name: `Coin Test ${Date.now()}-${Math.random()}`,
+            slug: `coin-test-${new mongoose.Types.ObjectId().toString()}`,
+            baseUrl: 'https://coin-test.invalid',
+        });
+        const providerProduct = await ProviderProduct.create({
+            provider: coinProvider._id,
+            externalProductId: 'coin-recharge-dynamic',
+            rawName: 'Dynamic coins',
+            rawPrice: '1',
+            minQty: 1,
+            maxQty: 100000,
+        });
+        const product = await createProduct({
+            basePrice: 1,
+            minQty: 1,
+            maxQty: 100000,
+            provider: coinProvider._id,
+            providerProduct: providerProduct._id,
+        });
+
+        await expect(placeOrder({ userId: customer._id, productId: product._id, quantity, provider: {} }))
+            .rejects.toMatchObject({ code: 'INVALID_COIN_RECHARGE_QUANTITY' });
+
+        expect((await freshUser(customer._id)).walletBalance).toBe(100);
+        expect(await Order.countDocuments({ userId: customer._id })).toBe(0);
+        expect(await countTransactions(customer._id)).toBe(0);
     });
 });
 

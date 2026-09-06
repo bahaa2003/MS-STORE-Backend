@@ -168,6 +168,8 @@ router.post('/providers/:id/xena/challenge', requirePermission('MANAGE_SUPPLIERS
 router.post('/providers/:id/xena/verify', requirePermission('MANAGE_SUPPLIERS'), validateBody(schemas.xenaVerify), providersCtrl.verifyXenaConnection);
 router.get('/providers/:id/xena/connection', requirePermission('MANAGE_SUPPLIERS'), providersCtrl.getXenaConnection);
 router.patch('/providers/:id/xena/product-config', requirePermission('MANAGE_SUPPLIERS'), validateBody(schemas.xenaProductConfig), providersCtrl.updateXenaProductConfig);
+router.patch('/providers/:id/coin-recharge/product-config', requirePermission('MANAGE_SUPPLIERS'), validateBody(schemas.coinRechargeProductConfig), providersCtrl.updateCoinRechargeProductConfig);
+router.get('/providers/:id/coin-recharge/history', requirePermission('MANAGE_SUPPLIERS'), providersCtrl.getCoinRechargeHistory);
 router.get('/providers/:id/check-order', requirePermission('MANAGE_SUPPLIERS'), providersCtrl.checkProviderOrder);
 router.get('/providers/:providerId/products/:externalProductId/price', requirePermission('MANAGE_SUPPLIERS'), providersCtrl.getProductPrice);
 router.patch('/providers/:id/toggle', requirePermission('MANAGE_SUPPLIERS'), providersCtrl.toggleProvider);
@@ -184,6 +186,7 @@ router.post('/orders/:id/retry', requirePermission('CONFIRM_ORDERS'), ordersCtrl
 router.post('/orders/:id/refund', requirePermission('CONFIRM_ORDERS'), ordersCtrl.refundOrder);
 router.post('/orders/:id/sync-status', requirePermission('CONFIRM_ORDERS'), ordersCtrl.syncOrderProviderStatus);
 router.post('/orders/:id/complete', requirePermission('CONFIRM_ORDERS'), ordersCtrl.completeOrder);
+router.post('/orders/:id/coin-recharge/resolve', requirePermission('CONFIRM_ORDERS'), validateBody(schemas.coinRechargeResolution), ordersCtrl.resolveCoinRechargeManualReview);
 router.patch('/orders/:id/status', requirePermission('CONFIRM_ORDERS'), validateBody(schemas.updateOrderStatus), ordersCtrl.updateStatus);
 router.get('/orders/:id', requirePermission('MANAGE_ORDERS'), ordersCtrl.getOrderById);
 

@@ -17,6 +17,8 @@ const catchAsync = require('../../shared/utils/catchAsync');
 const { NotFoundError, BusinessRuleError } = require('../../shared/errors/AppError');
 const xenaSvc = require('../providers/xena.service');
 const { XENA_DYNAMIC_PRODUCT_ID } = require('../providers/xena.constants');
+const { COIN_RECHARGE_DYNAMIC_PRODUCT_ID } = require('../providers/coinRecharge.constants');
+const coinRechargeSvc = require('../providers/coinRecharge.service');
 const { sanitizeProductForCustomer, sanitizeProductsForCustomer } = require('../products/product.serializer');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -178,7 +180,7 @@ const placeOrder = catchAsync(async (req, res) => {
     const { order, idempotent } = await orderService.createOrder({
         userId: req.user._id,
         productId,
-        quantity: parseInt(quantity, 10) || 1,
+        quantity,
         idempotencyKey: req.headers['idempotency-key'] || null,
         orderFieldsValues: finalFields,
         auditContext,
@@ -302,25 +304,19 @@ const verifyProductTarget = catchAsync(async (req, res) => {
         .lean({ virtuals: false });
 
     if (!product) throw new NotFoundError('Product');
-    if (product.providerProduct?.externalProductId !== XENA_DYNAMIC_PRODUCT_ID) {
-        throw new BusinessRuleError('This product does not support Xena target verification.', 'NOT_XENA_PRODUCT');
-    }
     if (!product.provider || product.provider.isActive !== true) {
         throw new BusinessRuleError('Provider is inactive.', 'PROVIDER_INACTIVE');
     }
 
     const provider = await require('../providers/provider.model').Provider.findById(product.provider._id);
-    const result = await xenaSvc.verifyTargetForProduct({
-        product,
-        provider,
-        targetUid: req.body.targetUid,
-        auditContext: {
-            actorId: req.user._id,
-            actorRole: 'CUSTOMER',
-            ipAddress: req.ip ?? null,
-            userAgent: req.get('User-Agent') ?? null,
-        },
-    });
+    let result;
+    if (product.providerProduct?.externalProductId === XENA_DYNAMIC_PRODUCT_ID) {
+        result = await xenaSvc.verifyTargetForProduct({ product, provider, targetUid: req.body.targetUid, auditContext: { actorId: req.user._id, actorRole: 'CUSTOMER', ipAddress: req.ip ?? null, userAgent: req.get('User-Agent') ?? null } });
+    } else if (product.providerProduct?.externalProductId === COIN_RECHARGE_DYNAMIC_PRODUCT_ID) {
+        result = await coinRechargeSvc.verifyTargetForProduct({ product, provider, targetUid: req.body.targetUid });
+    } else {
+        throw new BusinessRuleError('This product does not support target verification.', 'TARGET_VERIFICATION_UNSUPPORTED');
+    }
 
     sendSuccess(res, result, 'Target verified.');
 });

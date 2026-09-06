@@ -6,6 +6,7 @@
 
 const svc = require('./admin.providers.service');
 const xenaSvc = require('../providers/xena.service');
+const coinRechargeSvc = require('../providers/coinRecharge.service');
 const catchAsync = require('../../shared/utils/catchAsync');
 const { sendSuccess, sendCreated, sendPaginated } = require('../../shared/utils/apiResponse');
 
@@ -104,6 +105,16 @@ const updateXenaProductConfig = catchAsync(async (req, res) => {
     sendSuccess(res, { product: data }, 'Xena product configuration updated');
 });
 
+const updateCoinRechargeProductConfig = catchAsync(async (req, res) => {
+    const data = await coinRechargeSvc.updateProductConfig(req.params.id, req.body, auditContext(req));
+    sendSuccess(res, { product: data }, 'Coin recharge product configuration updated');
+});
+
+const getCoinRechargeHistory = catchAsync(async (req, res) => {
+    const data = await svc.getCoinRechargeHistory(req.params.id, req.query.page);
+    sendSuccess(res, data, 'Coin recharge transaction history retrieved for manual evidence only');
+});
+
 module.exports = {
     listProviders,
     getProviderById,
@@ -120,4 +131,6 @@ module.exports = {
     verifyXenaConnection,
     getXenaConnection,
     updateXenaProductConfig,
+    updateCoinRechargeProductConfig,
+    getCoinRechargeHistory,
 };

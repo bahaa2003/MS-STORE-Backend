@@ -12,6 +12,8 @@ const { getProviderAdapter } = require('../providers/adapters/adapter.factory');
 const { validateOrderFields } = require('./orderFields.validator');
 const xenaSvc = require('../providers/xena.service');
 const { XENA_DYNAMIC_PRODUCT_ID, XENA_TARGET_FIELD_KEY } = require('../providers/xena.constants');
+const { COIN_RECHARGE_DYNAMIC_PRODUCT_ID, COIN_RECHARGE_TARGET_FIELD_KEY } = require('../providers/coinRecharge.constants');
+const coinRechargeSvc = require('../providers/coinRecharge.service');
 const {
     AppError,
     NotFoundError,
@@ -605,7 +607,18 @@ const _attemptCreateOrder = async (
         }
 
         // ── 2. Validate Quantity Bounds ────────────────────────────────────────
-        const qty = parseInt(quantity, 10);
+        // Keep the legacy parseInt contract for every established provider.
+        // The new supplier alone accepts Java-long coin quantities, so its
+        // precision-safe validation is deliberately narrow and pre-debit.
+        const linkedProviderProduct = product.providerProduct
+            ? await ProviderProduct.findById(product.providerProduct).select('externalProductId').lean()
+            : null;
+        const isCoinRechargeProduct = linkedProviderProduct?.externalProductId === COIN_RECHARGE_DYNAMIC_PRODUCT_ID;
+        const quantityText = String(quantity ?? '');
+        if (isCoinRechargeProduct && (!/^\d+$/.test(quantityText) || !Number.isSafeInteger(Number(quantityText)) || Number(quantityText) < 1)) {
+            throw new BusinessRuleError('Coin quantity must be a positive safe integer.', 'INVALID_COIN_RECHARGE_QUANTITY');
+        }
+        const qty = isCoinRechargeProduct ? Number(quantityText) : parseInt(quantity, 10);
         if (qty < product.minQty || qty > product.maxQty) {
             throw new BusinessRuleError(
                 `Quantity must be between ${product.minQty} and ${product.maxQty}.`,
@@ -681,11 +694,9 @@ const _attemptCreateOrder = async (
         // block legitimate orders.
         //
         if (product.provider && product.providerProduct) {
-            const xenaProviderProduct = await ProviderProduct.findById(product.providerProduct)
-                .select('externalProductId')
-                .lean();
+            const dynamicProviderProduct = linkedProviderProduct;
 
-            if (xenaProviderProduct?.externalProductId === XENA_DYNAMIC_PRODUCT_ID) {
+            if (dynamicProviderProduct?.externalProductId === XENA_DYNAMIC_PRODUCT_ID) {
                 const providerDoc = await Provider.findById(product.provider);
                 if (!providerDoc) throw new NotFoundError('Provider');
                 if (!providerDoc.isActive) {
@@ -700,6 +711,16 @@ const _attemptCreateOrder = async (
                         actorId: userId,
                         actorRole: ACTOR_ROLES.CUSTOMER,
                     },
+                });
+            }
+            if (dynamicProviderProduct?.externalProductId === COIN_RECHARGE_DYNAMIC_PRODUCT_ID) {
+                const providerDoc = await Provider.findById(product.provider);
+                if (!providerDoc) throw new NotFoundError('Provider');
+                if (!providerDoc.isActive) throw new BusinessRuleError('Provider is inactive.', 'PROVIDER_INACTIVE');
+                await coinRechargeSvc.verifyTargetForProduct({
+                    product,
+                    provider: providerDoc,
+                    targetUid: customerInput?.values?.[COIN_RECHARGE_TARGET_FIELD_KEY],
                 });
             }
         }

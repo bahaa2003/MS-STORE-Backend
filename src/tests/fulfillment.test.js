@@ -217,6 +217,54 @@ describe('[2] executeOrder -- provider cases', () => {
         expect(refundTxns[0].amount).toBe(50);
     });
 
+    it('coin recharge: a proven pre-send failure is FAILED and refunded', async () => {
+        const order = await makeOrderDoc(customer._id, { providerCode: 'coin-recharge' });
+        const provider = makeMockProvider({
+            placeOrder: jest.fn().mockResolvedValue({
+                success: false,
+                definitePreSendFailure: true,
+                providerStatus: 'Cancelled',
+                rawResponse: { validation: 'rejected before request' },
+                errorMessage: 'invalid local request',
+            }),
+        });
+
+        const { order: updated, refunded } = await executeOrder(order._id, provider);
+
+        expect(updated.status).toBe(ORDER_STATUS.FAILED);
+        expect(refunded).toBe(true);
+        expect(updated.refunded).toBe(true);
+    });
+
+    it('coin recharge: a thrown placement error becomes MANUAL_REVIEW without refund or a second placement', async () => {
+        const order = await makeOrderDoc(customer._id, { providerCode: 'coin-recharge' });
+        const provider = makeMockProvider({
+            placeOrder: jest.fn().mockRejectedValue(Object.assign(new Error('timeout'), { code: 'ECONNABORTED' })),
+        });
+        const balanceBefore = (await User.findById(customer._id)).walletBalance;
+
+        const result = await executeOrder(order._id, provider);
+        const updated = await Order.findById(order._id);
+
+        expect(result.manualReview).toBe(true);
+        expect(updated.status).toBe(ORDER_STATUS.MANUAL_REVIEW);
+        expect(updated.refunded).toBe(false);
+        expect(provider.placeOrder).toHaveBeenCalledTimes(1);
+        expect((await User.findById(customer._id)).walletBalance).toBe(balanceBefore);
+        expect(await WalletTransaction.countDocuments({ userId: customer._id, type: 'REFUND' })).toBe(0);
+    });
+
+    it('coin recharge: an unexpected post-placement result fails closed to MANUAL_REVIEW', async () => {
+        const order = await makeOrderDoc(customer._id, { providerCode: 'coin-recharge' });
+        const provider = makeMockProvider({ placeOrder: jest.fn().mockResolvedValue({ success: true, providerStatus: 'Pending' }) });
+
+        await executeOrder(order._id, provider);
+
+        const updated = await Order.findById(order._id);
+        expect(updated.status).toBe(ORDER_STATUS.MANUAL_REVIEW);
+        expect(updated.refunded).toBe(false);
+    });
+
     it('Guard: non-PROCESSING order -> executeOrder is a no-op', async () => {
         const order = await makeOrderDoc(customer._id, { status: ORDER_STATUS.COMPLETED });
 
