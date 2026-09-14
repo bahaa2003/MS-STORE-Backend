@@ -20,6 +20,7 @@ const { XENA_DYNAMIC_PRODUCT_ID } = require('../providers/xena.constants');
 const { COIN_RECHARGE_DYNAMIC_PRODUCT_ID } = require('../providers/coinRecharge.constants');
 const coinRechargeSvc = require('../providers/coinRecharge.service');
 const { sanitizeProductForCustomer, sanitizeProductsForCustomer } = require('../products/product.serializer');
+const crypto = require('crypto');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -48,10 +49,34 @@ const getProfile = catchAsync(async (req, res) => {
         status: user.status,
         verified: user.verified,
         currency: user.currency,
+        isApiEnabled: Boolean(user.isApiEnabled),
+        whitelistIps: user.whitelistIps || [],
+        webhookUrl: user.webhookUrl || null,
         walletBalance: user.walletBalance,
         group: user.groupId,
         createdAt: user.createdAt,
     }, 'Profile retrieved.');
+});
+
+// ─── CANONICAL B2B API SETTINGS ────────────────────────────────────────────
+const generateApiToken = catchAsync(async (req, res) => {
+    const user = await User.findById(req.user._id).select('+apiToken');
+    if (!user) throw new NotFoundError('User');
+    if (!user.isApiEnabled) throw new BusinessRuleError('API access is not enabled for this account.', 'API_NOT_ENABLED');
+    const token = crypto.randomBytes(32).toString('hex');
+    user.apiToken = token;
+    await user.save();
+    // Raw token deliberately exists only in this response.
+    sendSuccess(res, { apiToken: token, isApiEnabled: true, whitelistIps: user.whitelistIps || [], webhookUrl: user.webhookUrl || null }, 'API token generated.');
+});
+
+const updateApiSettings = catchAsync(async (req, res) => {
+    const user = await User.findById(req.user._id);
+    if (!user) throw new NotFoundError('User');
+    if (req.body.whitelistIps !== undefined) user.whitelistIps = [...new Set(req.body.whitelistIps.map((value) => String(value).trim()).filter(Boolean))];
+    if (req.body.webhookUrl !== undefined) user.webhookUrl = req.body.webhookUrl || null;
+    await user.save();
+    sendSuccess(res, { isApiEnabled: Boolean(user.isApiEnabled), whitelistIps: user.whitelistIps, webhookUrl: user.webhookUrl }, 'API settings updated.');
 });
 
 // =============================================================================
@@ -415,6 +440,8 @@ const getDeposit = catchAsync(async (req, res) => {
 // =============================================================================
 
 module.exports = {
+    generateApiToken,
+    updateApiSettings,
     getProfile,
     getWallet,
     getTransactions,

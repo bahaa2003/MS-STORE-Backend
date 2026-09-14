@@ -230,6 +230,34 @@ const userSchema = new mongoose.Schema(
             min: [0, 'Credit used cannot be negative'],
         },
 
+        // ── Canonical B2B API access ────────────────────────────────────────
+        isApiEnabled: {
+            type: Boolean,
+            default: false,
+        },
+        // bcrypt hash only. The raw value is returned exactly once at token
+        // generation time and is never persisted or serialized.
+        apiToken: {
+            type: String,
+            select: false,
+            default: null,
+        },
+        apiSecret: {
+            type: String,
+            select: false,
+            default: null,
+        },
+        whitelistIps: {
+            type: [String],
+            default: [],
+        },
+        webhookUrl: {
+            type: String,
+            trim: true,
+            default: null,
+            match: [/^https?:\/\//, 'webhookUrl must start with http:// or https://'],
+        },
+
         // ── Currency ──────────────────────────────────────────────────────────
         /**
          * The ISO 4217 currency code for this user's wallet.
@@ -313,9 +341,25 @@ userSchema.pre('save', async function (next) {
     next();
 });
 
+userSchema.pre('save', async function hashApiToken(next) {
+    if (!this.apiToken || !this.isModified('apiToken')) return next();
+    if (/^\$2[aby]\$\d{2}\$/.test(this.apiToken)) return next();
+    try {
+        this.apiToken = await bcrypt.hash(this.apiToken, config.bcrypt.rounds);
+        next();
+    } catch (error) {
+        next(error);
+    }
+});
+
 // ─── Instance Methods ─────────────────────────────────────────────────────────
 userSchema.methods.comparePassword = async function (candidatePassword) {
     return bcrypt.compare(candidatePassword, this.password);
+};
+
+userSchema.methods.compareApiToken = async function (candidateToken) {
+    if (!this.apiToken || !candidateToken) return false;
+    return bcrypt.compare(String(candidateToken), this.apiToken);
 };
 
 /**
@@ -326,6 +370,8 @@ userSchema.methods.toSafeObject = function () {
     delete obj.password;
     delete obj.twoFactorOtp;
     delete obj.twoFactorOtpExpires;
+    delete obj.apiToken;
+    delete obj.apiSecret;
     return obj;
 };
 

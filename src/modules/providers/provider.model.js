@@ -48,6 +48,15 @@ const providerSchema = new mongoose.Schema(
             lowercase: true,
         },
 
+        // Optional explicit adapter selection. Existing slug/name lookup remains
+        // supported for every configured Ms-Store provider.
+        adapterType: {
+            type: String,
+            trim: true,
+            lowercase: true,
+            default: null,
+        },
+
         /**
          * Base URL of the provider's API.
          * The adapter uses this as the root for all HTTP calls.
@@ -233,6 +242,7 @@ providerSchema.pre('save', function (next) {
             .replace(/[^a-z0-9]+/g, '-')
             .replace(/^-+|-+$/g, '');
     }
+    if (this.adapterType) this.adapterType = String(this.adapterType).trim().toLowerCase() || null;
     encryptProviderSecrets.call(this);
     next();
 });
@@ -246,6 +256,9 @@ providerSchema.pre('findOneAndUpdate', function (next) {
     }
     if (Object.prototype.hasOwnProperty.call(target, 'apiKey') && target.apiKey) {
         target.apiKey = encryptCredential(target.apiKey);
+    }
+    if (Object.prototype.hasOwnProperty.call(target, 'adapterType')) {
+        target.adapterType = target.adapterType ? String(target.adapterType).trim().toLowerCase() : null;
     }
 
     if (update.$set) update.$set = target;

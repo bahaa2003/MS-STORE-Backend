@@ -31,6 +31,17 @@ const apiLimiter = rateLimit({
     },
 });
 
+// Canonical B2B consumers require a stable numeric envelope while all other
+// Ms-Store endpoints retain their current limiter response unchanged.
+const compatRateLimitHandler = (_req, res) => res.status(429).json({ status: 'ERROR', code: 111, message: 'Try again later' });
+const compatApiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 1000,
+    standardHeaders: true,
+    legacyHeaders: false,
+    handler: compatRateLimitHandler,
+});
+
 // ── Strict Auth Rate Limiter ──────────────────────────────────────────────────
 
 const authLimiter = rateLimit({
@@ -59,4 +70,4 @@ const walletLimiter = rateLimit({
     },
 });
 
-module.exports = { apiLimiter, authLimiter, walletLimiter };
+module.exports = { apiLimiter, compatApiLimiter, compatRateLimitHandler, authLimiter, walletLimiter };

@@ -13,6 +13,8 @@ const {
 } = require('./modules/whatsapp/whatsapp.service');
 
 
+const isExplicitlyDisabled = (value) => String(value || '').trim().toLowerCase() === 'false';
+
 const startServer = async () => {
     try {
         // 1. Connect to MongoDB first
@@ -30,14 +32,19 @@ const startServer = async () => {
             console.log('');
         });
 
-        // 3. Start background cron jobs (skipped in test env)
-        fulfillmentJob.start();    // every minute  — polls PROCESSING order statuses
-        syncProvidersJob.start();  // every 6 hours — syncs provider product catalogues
-
-        // ── Graceful Shutdown ─────────────────────────────────────────────────────
-        initializeWhatsAppClient().catch((err) => {
-            console.error('[WhatsApp] Startup initialization failed:', err.message);
-        });
+        // Safe mode overrides legacy defaults. When unset, current production
+        // behavior is preserved: both jobs and WhatsApp auto-initialize.
+        if (config.safeLocalProductionMode) {
+            console.warn('[Startup] SAFE_LOCAL_PRODUCTION_MODE=true: jobs and WhatsApp initialization are disabled.');
+        } else {
+            if (!isExplicitlyDisabled(process.env.BACKGROUND_JOBS_ENABLED)) {
+                fulfillmentJob.start();
+                syncProvidersJob.start();
+            }
+            if (!isExplicitlyDisabled(process.env.WHATSAPP_AUTO_INIT)) {
+                initializeWhatsAppClient().catch((err) => console.error('[WhatsApp] Startup initialization failed:', err.message));
+            }
+        }
 
         const gracefulShutdown = (signal) => {
             console.log(`\n⚠️  Received ${signal}. Shutting down gracefully...`);
@@ -84,4 +91,5 @@ const startServer = async () => {
     }
 };
 
-startServer();
+if (require.main === module) startServer();
+module.exports = { startServer };

@@ -2,6 +2,7 @@
 
 const mongoose = require('mongoose');
 const { computeMarkup, isPositive } = require('../../shared/utils/decimalPrecision');
+const { getNextSequence } = require('../orders/counter.model');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -46,6 +47,15 @@ const DYNAMIC_FIELD_TYPES = Object.freeze(['text', 'number', 'email', 'select'])
 const productSchema = new mongoose.Schema(
     {
         // ── Identity ──────────────────────────────────────────────────────────
+
+        // Stable, public integer used only by the Canonical B2B compatibility
+        // API. Mongo _id remains the internal identifier.
+        compatProductId: {
+            type: Number,
+            unique: true,
+            sparse: true,
+            index: true,
+        },
 
         name: {
             type: String,
@@ -464,6 +474,18 @@ const productSchema = new mongoose.Schema(
         timestamps: true,
     }
 );
+
+productSchema.pre('save', async function assignCompatProductId(next) {
+    try {
+        if (this.isNew && !this.compatProductId) {
+            // Counter returns startAt + 1: Canonical products begin at 1000.
+            this.compatProductId = await getNextSequence('compatProductId', 999);
+        }
+        next();
+    } catch (error) {
+        next(error);
+    }
+});
 
 // ─── Indexes ──────────────────────────────────────────────────────────────────
 

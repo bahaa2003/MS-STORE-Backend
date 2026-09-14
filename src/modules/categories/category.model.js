@@ -1,6 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const { getNextSequence } = require('../orders/counter.model');
 
 /**
  * category.model.js
@@ -12,6 +13,14 @@ const mongoose = require('mongoose');
 
 const categorySchema = new mongoose.Schema(
     {
+        // Canonical B2B public category identifier. This is additive and does
+        // not replace the existing Mongo/category hierarchy identifiers.
+        compatCategoryId: {
+            type: Number,
+            unique: true,
+            sparse: true,
+            index: true,
+        },
         /** Display name (English). */
         name: {
             type: String,
@@ -88,6 +97,17 @@ categorySchema.pre('save', function (next) {
             .replace(/^-+|-+$/g, '');                    // trim leading/trailing hyphens
     }
     next();
+});
+
+categorySchema.pre('save', async function assignCompatCategoryId(next) {
+    try {
+        if (this.isNew && !this.compatCategoryId) {
+            this.compatCategoryId = await getNextSequence('compatCategoryId', 1);
+        }
+        next();
+    } catch (error) {
+        next(error);
+    }
 });
 
 const Category = mongoose.model('Category', categorySchema);

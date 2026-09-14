@@ -135,7 +135,7 @@ const updateUser = async (id, data, adminId) => {
     const user = await _findOrFail(id);
     const before = user.toObject();
 
-    const { name, email, groupId, status, verified } = data;
+    const { name, email, groupId, status, verified, isApiEnabled } = data;
 
     if (name !== undefined) user.name = name.trim();
     if (status !== undefined) {
@@ -149,6 +149,7 @@ const updateUser = async (id, data, adminId) => {
         }
     }
     if (verified !== undefined) user.verified = verified;
+    if (isApiEnabled !== undefined) user.isApiEnabled = Boolean(isApiEnabled);
     if (groupId !== undefined) user.groupId = groupId;
 
     if (email !== undefined && email !== user.email) {

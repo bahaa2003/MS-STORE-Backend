@@ -62,12 +62,14 @@ const updateProvider = async (id, data, adminId) => {
         isActive: provider.isActive,
         syncInterval: provider.syncInterval,
         supportedFeatures: provider.supportedFeatures,
+        adapterType: provider.adapterType || null,
         credentialsConfigured: Boolean(provider.apiToken || provider.apiKey),
     };
-    const { name, slug, baseUrl, apiToken, isActive, syncInterval, supportedFeatures } = data;
+    const { name, slug, adapterType, baseUrl, apiToken, isActive, syncInterval, supportedFeatures } = data;
 
     if (name !== undefined) provider.name = name;
     if (slug !== undefined) provider.slug = slug;
+    if (adapterType !== undefined) provider.adapterType = adapterType;
     if (baseUrl !== undefined) provider.baseUrl = baseUrl;
     if (apiToken !== undefined && String(apiToken).trim() !== '') provider.apiToken = apiToken;
     if (isActive !== undefined) provider.isActive = isActive;
@@ -83,6 +85,7 @@ const updateProvider = async (id, data, adminId) => {
         isActive: provider.isActive,
         syncInterval: provider.syncInterval,
         supportedFeatures: provider.supportedFeatures,
+        adapterType: provider.adapterType || null,
         credentialsConfigured: Boolean(provider.apiToken || provider.apiKey),
     };
 

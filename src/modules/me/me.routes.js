@@ -50,6 +50,13 @@ router.use(authenticate, requireActiveUser);
  */
 router.get('/', me.getProfile);
 
+router.post('/api-token', me.generateApiToken);
+router.patch('/api-settings', [
+    body('whitelistIps').optional().isArray().withMessage('whitelistIps must be an array'),
+    body('whitelistIps.*').optional().isString().trim().isLength({ max: 100 }),
+    body('webhookUrl').optional({ nullable: true }).isURL().withMessage('webhookUrl must be a valid URL'),
+], validate, me.updateApiSettings);
+
 // ─── Wallet ───────────────────────────────────────────────────────────────────
 
 router.get('/wallet', me.getWallet);

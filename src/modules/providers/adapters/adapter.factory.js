@@ -35,6 +35,7 @@ const { TorosfonAdapter } = require('./toros.adapter');
 const { AlkasrVipAdapter } = require('./alkasr.adapter');
 const { XenaRechargeAdapter } = require('./xena.adapter');
 const { CoinRechargeAdapter } = require('./coinRecharge.adapter');
+const { CanonicalB2BAdapter } = require('./canonicalB2B.adapter');
 
 // ─── Registry ────────────────────────────────────────────────────────────────
 //
@@ -42,6 +43,7 @@ const { CoinRechargeAdapter } = require('./coinRecharge.adapter');
 // so the lookup works regardless of whether provider.slug is set.
 //
 const registry = new Map([
+    ['canonical-b2b', CanonicalB2BAdapter],
     // ── Royal Crown ──────────────────────────────────────────────────────────
     ['royal-crown', RoyalCrownAdapter],   // slug
     ['royal crown', RoyalCrownAdapter],   // name (lowercase)
@@ -109,10 +111,11 @@ const _isExplicitMockKey = (key) =>
     || key.endsWith('-mock');
 
 const _resolveAdapterClass = (provider) => {
+    const byAdapterType = (provider.adapterType ?? '').toLowerCase().trim();
     const bySlug = (provider.slug ?? '').toLowerCase().trim();
     const byName = (provider.name ?? '').toLowerCase().trim();
 
-    const AdapterClass = registry.get(bySlug) ?? registry.get(byName);
+    const AdapterClass = registry.get(byAdapterType) ?? registry.get(bySlug) ?? registry.get(byName);
     if (AdapterClass) return AdapterClass;
 
     if (_isExplicitMockKey(bySlug) || _isExplicitMockKey(byName)) {
@@ -138,9 +141,12 @@ const _resolveAdapterClass = (provider) => {
  * @returns {BaseProviderAdapter}
  */
 const getAdapter = (provider, adapterOptions = {}) => {
-    const AdapterClass = _resolveAdapterClass(provider) ?? MockProviderAdapter;
+    const AdapterClass = _resolveAdapterClass(provider);
+    if (process.env.NODE_ENV === 'production' && (!AdapterClass || AdapterClass === MockProviderAdapter)) {
+        throw new Error(`UNSUPPORTED_PROVIDER: Mock provider fallback is disabled in production for adapterType="${provider.adapterType || ''}" / slug="${provider.slug || ''}".`);
+    }
 
-    return new AdapterClass(provider, adapterOptions);
+    return new (AdapterClass ?? MockProviderAdapter)(provider, adapterOptions);
 };
 
 /**
@@ -159,6 +165,10 @@ const getProviderAdapter = (provider, options = {}) => {
     const byName = (provider.name ?? '').toLowerCase().trim();
 
     const AdapterClass = _resolveAdapterClass(provider);
+
+    if (process.env.NODE_ENV === 'production' && (!AdapterClass || AdapterClass === MockProviderAdapter)) {
+        throw new Error(`UNSUPPORTED_PROVIDER: Mock provider fallback is disabled in production for adapterType="${provider.adapterType || ''}" / slug="${provider.slug || ''}".`);
+    }
 
     if (!AdapterClass) {
         if (options.strict) {

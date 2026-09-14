@@ -10,7 +10,7 @@ const morgan = require('morgan');
 const config = require('./config/config');
 const globalErrorHandler = require('./shared/errors/errorHandler');
 const { AppError } = require('./shared/errors/AppError');
-const { apiLimiter } = require('./shared/middlewares/rateLimiter');
+const { apiLimiter, compatApiLimiter } = require('./shared/middlewares/rateLimiter');
 
 // ── Module Routers ────────────────────────────────────────────────────────────
 const authRoutes = require('./modules/auth/auth.routes');
@@ -30,10 +30,11 @@ const meRoutes = require('./modules/me/me.routes');          // ← user panel
 const targetRoutes = require('./modules/targets/target.routes'); // ← target coin purchases
 const notificationRoutes = require('./modules/notifications/notification.routes'); // ← notifications
 const currencyRoutes = require('./modules/currency/currency.routes');
+const clientCompatRoutes = require('./modules/clientCompat/clientCompat.routes');
 const uploadRoutes = require('./shared/routes/upload.routes');
 const path = require('path');
-// Seed default settings on startup (idempotent, no-op if already seeded)
-require('./modules/admin/setting.model').seedDefaultSettings().catch(() => { });
+// Seed only outside explicit local-safe production inspection mode.
+require('./shared/startup/defaultSettingsSeed').startDefaultSettingsSeed();
 
 
 const app = express();
@@ -103,7 +104,13 @@ app.get('/health', (req, res) => {
 const API_PREFIX = '/api';
 
 // Apply general rate limiter to all API routes (500 req / 15 min per IP)
-app.use(API_PREFIX, apiLimiter);
+// Compatibility routes need their own numeric rate-limit contract. Exclude
+// only that subpath from the normal limiter; all established APIs are intact.
+app.use(API_PREFIX, (req, res, next) => {
+    if (req.path === '/client/api' || req.path.startsWith('/client/api/')) return next();
+    return apiLimiter(req, res, next);
+});
+app.use('/client/api', compatApiLimiter, clientCompatRoutes);
 
 app.use(`${API_PREFIX}/auth`, authRoutes);
 app.use(`${API_PREFIX}/users`, userRoutes);
@@ -114,6 +121,7 @@ app.use(`${API_PREFIX}/wallet`, walletRoutes);
 app.use(`${API_PREFIX}/audit`, auditRoutes);
 app.use(`${API_PREFIX}/deposits`, depositRoutes);
 app.use(`${API_PREFIX}/providers`, providerRoutes);
+app.use(`${API_PREFIX}/client/api`, compatApiLimiter, clientCompatRoutes);
 
 // ── User Panel ─────────────────────────────────────────────────────────────────
 app.use(`${API_PREFIX}/me`, meRoutes);

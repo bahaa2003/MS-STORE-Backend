@@ -13,11 +13,11 @@ const {
 // PROVIDER CRUD
 // =============================================================================
 
-const createProvider = async ({ name, slug, baseUrl, apiKey, apiToken, syncInterval, isActive, supportedFeatures }) => {
+const createProvider = async ({ name, slug, adapterType, baseUrl, apiKey, apiToken, syncInterval, isActive, supportedFeatures }) => {
     const existing = await Provider.findOne({ name: new RegExp(`^${name}$`, 'i') });
     if (existing) throw new ConflictError(`A provider named '${name}' already exists.`);
 
-    return Provider.create({ name, slug, baseUrl, apiKey, apiToken, syncInterval, isActive, supportedFeatures });
+    return Provider.create({ name, slug, adapterType, baseUrl, apiKey, apiToken, syncInterval, isActive, supportedFeatures });
 };
 
 const listProviders = async ({ includeInactive = false } = {}) => {
@@ -32,7 +32,7 @@ const getProviderById = async (providerId) => {
 };
 
 const updateProvider = async (providerId, updates) => {
-    const allowed = ['name', 'slug', 'baseUrl', 'apiKey', 'apiToken', 'syncInterval', 'isActive', 'supportedFeatures'];
+    const allowed = ['name', 'slug', 'adapterType', 'baseUrl', 'apiKey', 'apiToken', 'syncInterval', 'isActive', 'supportedFeatures'];
     const safe = Object.fromEntries(
         Object.entries(updates).filter(([k]) => allowed.includes(k))
     );

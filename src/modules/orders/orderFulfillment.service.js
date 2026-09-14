@@ -401,7 +401,9 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
             externalProductId: externalProductId ?? String(order.productId._id),
             quantity: order.quantity,
             orderId: String(order._id),
-            referenceId: String(order._id),
+            // Stable public reference for providers that support safe lookup.
+            // Coin Recharge remains protected by its explicit manual path below.
+            referenceId: isCoinRechargeOrder(order) ? String(order._id) : String(order.orderNumber || order._id),
             clientReference: `order-${order.orderNumber || order._id}`,
             providerIdempotencyKey: `xena-order-${order._id}`,
             ...mappedCustomerFields,   // ← spread translated customer fields onto params
@@ -537,7 +539,7 @@ const executeOrder = async (orderId, provider = null, auditContext = null) => {
         await Order.findByIdAndUpdate(orderId, {
             $set: {
                 status: ORDER_STATUS.FAILED,
-                providerStatus: result.providerStatus,
+                providerStatus: outcomeUncertain && !result.providerOrderId ? 'PLACEMENT_UNCERTAIN' : result.providerStatus,
                 providerOrderId: result.providerOrderId,
                 providerRawResponse: result.rawResponse,
                 providerOutcome: 'definite',
@@ -1099,6 +1101,7 @@ const pollProcessingOrders = async (providerOverride = null) => {
         $or: [
             { providerOrderId: { $ne: null } },
             { providerCode: XENA_PROVIDER_SLUG },
+            { providerStatus: 'PLACEMENT_UNCERTAIN', providerOrderId: null },
         ],
     }).sort({ lastCheckedAt: 1 }).limit(200);  // oldest-checked first, cap 200/run
 
@@ -1261,7 +1264,28 @@ const pollProcessingOrders = async (providerOverride = null) => {
             }
 
             const adapter = getProviderAdapter(providerDoc, { strict: true });
-            const ids = orders.map((o) => o.providerOrderId);
+            // A Canonical upstream can acknowledge an order after a placement
+            // timeout. Recover by Ms-Store's stable orderNumber; never apply
+            // this generic recovery to non-idempotent Coin Recharge.
+            const unresolved = orders.filter((order) => order.providerStatus === 'PLACEMENT_UNCERTAIN' && !order.providerOrderId && !isCoinRechargeOrder(order));
+            for (const order of unresolved) {
+                if (typeof adapter.checkOrderByReference !== 'function') { stats.pending++; continue; }
+                try {
+                    const recovered = await adapter.checkOrderByReference(order.orderNumber);
+                    if (recovered?.found && recovered.providerOrderId) {
+                        await Order.findByIdAndUpdate(order._id, { $set: { providerOrderId: recovered.providerOrderId, providerStatus: recovered.providerStatus, providerRawResponse: recovered.rawResponse, providerOutcome: 'processing', lastCheckedAt: new Date() } });
+                        order.providerOrderId = recovered.providerOrderId;
+                        order.providerStatus = recovered.providerStatus;
+                    } else {
+                        const retryCount = order.retryCount + 1;
+                        await Order.findByIdAndUpdate(order._id, { $set: { retryCount, lastCheckedAt: new Date(), ...(retryCount >= MAX_RETRY_COUNT ? { status: ORDER_STATUS.MANUAL_REVIEW } : {}) } });
+                        if (retryCount >= MAX_RETRY_COUNT) stats.manualReview++; else stats.pending++;
+                    }
+                } catch (error) { stats.errors.push(`[${order._id}] reference recovery: ${error.message}`); stats.pending++; }
+            }
+            const normalOrders = orders.filter((order) => order.providerOrderId != null);
+            if (!normalOrders.length) continue;
+            const ids = normalOrders.map((o) => o.providerOrderId);
 
             // ── Call the provider batch-check endpoint ────────────────────────
             let statusResults = [];
@@ -1297,7 +1321,7 @@ const pollProcessingOrders = async (providerOverride = null) => {
                 continue;   // don't crash the loop for other providers
             }
 
-            await _applyResults(orders, statusResults);
+            await _applyResults(normalOrders, statusResults);
 
         } catch (groupErr) {
             // Unexpected crash (e.g. DB error) — log but keep going

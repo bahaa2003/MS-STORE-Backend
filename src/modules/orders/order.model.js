@@ -1,6 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 
 const ORDER_STATUS = Object.freeze({
     PENDING: 'PENDING',
@@ -42,6 +43,15 @@ const orderSchema = new mongoose.Schema(
         orderNumber: {
             type: Number,
             unique: true,
+            index: true,
+        },
+
+        // Opaque public ID for legacy/Canonical B2B clients. Keep orderNumber
+        // and Mongo _id unchanged for all existing Ms-Store workflows.
+        compatOrderId: {
+            type: String,
+            unique: true,
+            sparse: true,
             index: true,
         },
 
@@ -404,6 +414,13 @@ const orderSchema = new mongoose.Schema(
         timestamps: true,
     }
 );
+
+orderSchema.pre('save', function assignCompatOrderId(next) {
+    if (this.isNew && !this.compatOrderId) {
+        this.compatOrderId = `ID_${crypto.randomBytes(8).toString('hex')}`;
+    }
+    next();
+});
 
 // ─── Indexes ──────────────────────────────────────────────────────────────────
 

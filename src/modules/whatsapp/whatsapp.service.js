@@ -2,6 +2,7 @@
 
 const fs = require('fs/promises');
 const path = require('path');
+const config = require('../../config/config');
 
 let Client = null;
 let LocalAuth = null;
@@ -176,6 +177,7 @@ const createClient = () => {
 };
 
 const initializeWhatsAppClient = async () => {
+    if (config.safeLocalProductionMode) return getStatus();
     if (!dependenciesAvailable()) {
         state.lastError = dependencyLoadError
             ? `WhatsApp dependency unavailable: ${dependencyLoadError.message}`
@@ -317,6 +319,7 @@ const formatMetadataForLog = (metadata) => {
 
 async function sendAdminNotification(message, metadata = {}) {
     try {
+        if (config.safeLocalProductionMode) return { success: true, skipped: 'SAFE_LOCAL_PRODUCTION_MODE' };
         if (!dependenciesAvailable()) {
             throw new Error(state.lastError || 'WhatsApp dependency unavailable.');
         }
