@@ -62,6 +62,19 @@ describe('Canonical client compatibility HTTP contract', () => {
         expect((await get(`/client/api/content/${root.body.data.categories[0].id}`, auth)).body.data.products[0].id).toBe(row.id);
     });
 
+    test('keeps Canonical catalog prices in USD for non-USD wallet accounts', async () => {
+        const { group, token } = await apiUser({ currency: 'EGP' });
+        group.percentage = 25;
+        await group.save();
+        const saved = await product({ basePrice: 8 });
+
+        const response = await get(`/client/api/products?products_id=${saved.compatProductId}&base=1`, headers(token));
+        expect(response.status).toBe(200);
+        expect(response.body).toEqual([expect.objectContaining({
+            id: saved.compatProductId, price: 10, currency: 'USD',
+        })]);
+    });
+
     test('old products receive an atomic compatibility ID lazily without backfill', async () => {
         const { token } = await apiUser(); const legacy = await product(); await legacy.updateOne({ $unset: { compatProductId: 1 } });
         const response = await get('/client/api/products', headers(token)); expect(response.body[0].id).toEqual(expect.any(Number));

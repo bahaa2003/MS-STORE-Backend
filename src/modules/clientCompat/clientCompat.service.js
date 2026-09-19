@@ -7,7 +7,6 @@ const { Order } = require('../orders/order.model');
 const { getNextSequence } = require('../orders/counter.model');
 const orderService = require('../orders/order.service');
 const { calculateFinalPrice } = require('../orders/pricing.service');
-const { convertUsdToUserCurrency } = require('../../services/currencyConverter.service');
 const { ClientCompatError, ERROR_CODES } = require('./clientCompat.errors');
 const { fieldsFor, fieldKey, fieldLabel, mapProduct, mapCreatedOrder, mapCheckedOrder } = require('./clientCompat.mappers');
 
@@ -30,9 +29,9 @@ const ensureCategoryCompatId = (category) => ensure(Category, category, 'compatC
 const ensureCompatOrderId = (order) => ensure(Order, order, 'compatOrderId');
 const priceFor = async (product, reseller) => {
     const usd = calculateFinalPrice(product.basePrice, Number(reseller.groupId?.percentage || 0));
-    const currency = String(reseller.currency || 'USD').toUpperCase();
-    const converted = await convertUsdToUserCurrency(Number(usd), currency);
-    return { finalPrice: converted.finalAmount, currency };
+    // This endpoint is the Canonical provider catalog, so its numeric price is
+    // the USD reseller sale price, not a converted wallet amount.
+    return { finalPrice: Number(usd), currency: 'USD' };
 };
 const categories = async () => Category.find({ isActive: true }).sort({ sortOrder: 1, name: 1 }).lean();
 const assignIds = async (products, cats) => {
