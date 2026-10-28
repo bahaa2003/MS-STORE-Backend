@@ -36,6 +36,7 @@ const { AlkasrVipAdapter } = require('./alkasr.adapter');
 const { XenaRechargeAdapter } = require('./xena.adapter');
 const { CoinRechargeAdapter } = require('./coinRecharge.adapter');
 const { CanonicalB2BAdapter } = require('./canonicalB2B.adapter');
+const { BrandOneCardAdapter } = require('./brandOneCard.adapter');
 
 // ─── Registry ────────────────────────────────────────────────────────────────
 //
@@ -44,6 +45,10 @@ const { CanonicalB2BAdapter } = require('./canonicalB2B.adapter');
 //
 const registry = new Map([
     ['canonical-b2b', CanonicalB2BAdapter],
+    // api.brand-one-card.com is independent of the existing brand1-card.
+    ['brand-one-card', BrandOneCardAdapter],
+    ['brand one card', BrandOneCardAdapter],
+    ['brandonecard', BrandOneCardAdapter],
     // ── Royal Crown ──────────────────────────────────────────────────────────
     ['royal-crown', RoyalCrownAdapter],   // slug
     ['royal crown', RoyalCrownAdapter],   // name (lowercase)
